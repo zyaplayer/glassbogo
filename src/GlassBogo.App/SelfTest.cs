@@ -31,6 +31,19 @@ internal static class SelfTest
                     await Task.Delay(1500);
                     dock.QaVerifyIcons();
                     Log("dock loaded; preview icons verified");
+                    var motionButton = Walk(dock).OfType<Button>().First();
+                    motionButton.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseEnterEvent });
+                    var motion = (TransformGroup)motionButton.RenderTransform;
+                    if (SystemParameters.ClientAreaAnimation && !motion.Children.Any(t => t.HasAnimatedProperties))
+                        throw new InvalidOperationException("悬浮动画未启动。");
+                    await Task.Delay(300);
+                    if (motion.Children.Any(t => t.HasAnimatedProperties))
+                        throw new InvalidOperationException("悬浮动画结束后时钟未释放。");
+                    motionButton.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseLeaveEvent });
+                    await Task.Delay(300);
+                    if (motion.Children.OfType<TranslateTransform>().Single().Y != 0)
+                        throw new InvalidOperationException("鼠标离开后位移未归零。");
+                    Log("hover motion starts/stops and returns to rest; system animations=" + SystemParameters.ClientAreaAnimation);
                     dock.QaVerifyNavigation();
                     ctx.LocateEntries([ctx.Db.Current.Entries[0]]);
                     await Task.Delay(300);
@@ -249,6 +262,8 @@ internal static class SelfTest
     private static void Snapshot(Window window, string path)
     {
         window.UpdateLayout();
+        if (window.WindowState == WindowState.Normal && (Math.Abs(window.ActualWidth - window.Width) > 1 || Math.Abs(window.ActualHeight - window.Height) > 1))
+            throw new InvalidOperationException("窗口客户区被原生非客户边框挤压。");
         var image = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96, PixelFormats.Pbgra32);
         image.Render(window);
         var encoder = new PngBitmapEncoder();

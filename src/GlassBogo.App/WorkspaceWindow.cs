@@ -50,6 +50,7 @@ internal sealed class WorkspaceWindow : GlassWindow
     private readonly TextBox search = new() { ToolTip = "搜索已收录的入口" }; private readonly ListBox entries = new() { SelectionMode = SelectionMode.Extended };
     private readonly ComboBox filter = new() { MinWidth = 130, Margin = new(5), DisplayMemberPath = "Name", SelectedValuePath = "Id" };
     private readonly TextBlock status = Design.Text("", 12, "Muted");
+    private readonly Dictionary<string, Button> navigation = new();
     internal WorkspaceWindow(AppContext context)
     {
         ctx = context;
@@ -60,10 +61,21 @@ internal sealed class WorkspaceWindow : GlassWindow
         MinHeight = 500;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel();
-        var nav = Design.Row(Design.Button("工作台", () => ShowPage("home")), Design.Button("全部入口", () => ShowPage("entries")), Design.Button("日历", ctx.OpenCalendar), Design.Button("插件", () => ShowPage("plugins")), Design.Button("设置", () => ShowPage("settings")));
-        nav.Margin = new(0, 0, 0, 14);
-        DockPanel.SetDock(nav, Dock.Top);
-        root.Children.Add(nav);
+        var nav = new StackPanel();
+        foreach (var (key, label, iconName) in new[] { ("home", "工作台", "home"), ("entries", "全部入口", "folder"), ("calendar", "日历", "calendar"), ("plugins", "插件", "plugin"), ("settings", "设置", "settings") })
+        {
+            var button = Design.Button("", () => { if (key == "calendar") ctx.OpenCalendar(); else ShowPage(key); });
+            var glyph = Design.Icon(iconName, 18);
+            glyph.Margin = new(0, 0, 12, 0);
+            button.Content = Design.Row(glyph, Design.Text(label, 14));
+            button.SetResourceReference(FrameworkElement.StyleProperty, "NavButton");
+            nav.Children.Add(button);
+            navigation[key] = button;
+        }
+        var rail = new Border { Child = nav, Width = 162, CornerRadius = new(18), Padding = new(8), Margin = new(0, 0, 24, 0) };
+        rail.SetResourceReference(Border.BackgroundProperty, "Inset");
+        DockPanel.SetDock(rail, Dock.Left);
+        root.Children.Add(rail);
         root.Children.Add(content);
         SetPage("GlassBogo", root);
         ctx.Db.Changed += OnData;
@@ -122,6 +134,7 @@ internal sealed class WorkspaceWindow : GlassWindow
     private void ShowPage(string target)
     {
         page = target;
+        foreach (var (key, button) in navigation) button.Tag = key == target ? "active" : null;
         switch (target)
         {
             case "entries":
@@ -142,9 +155,21 @@ internal sealed class WorkspaceWindow : GlassWindow
     private void Home()
     {
         var panel = new StackPanel();
-        panel.Children.Add(Design.Text("把桌面留给专注。", 30));
-        panel.Children.Add(Design.Text("应用、文档与文件夹，只需一个顺手的入口。", 14, "Muted"));
-        panel.Children.Add(Design.Row(Design.Button("整理桌面入口", DiscoverDesktop), Design.AsyncButton("添加已安装应用", () => PickApps()), Design.Button("打开全部入口", () => ShowPage("entries")), Design.Button("快速记一件事", () => CalendarWindow.EditTask(ctx, this, null, true))));
+        var eyebrow = Design.Text("你的桌面，一切就绪", 12, "Muted");
+        eyebrow.Margin = new(0, 8, 0, 12);
+        panel.Children.Add(eyebrow);
+        var heading = Design.Text("留一点空间，\n给正在做的事。", 32);
+        heading.FontWeight = FontWeights.SemiBold;
+        heading.Margin = new(0, 0, 0, 12);
+        panel.Children.Add(heading);
+        var description = Design.Text("把常用入口归在一起，随手展开，即刻开始。", 14, "Muted");
+        description.Margin = new(0, 0, 0, 20);
+        panel.Children.Add(description);
+        var shortcuts = new WrapPanel { Margin = new(-4, 0, 0, 14) };
+        shortcuts.Children.Add(Design.Button("整理桌面入口", DiscoverDesktop));
+        shortcuts.Children.Add(Design.AsyncButton("添加应用", () => PickApps()));
+        shortcuts.Children.Add(Design.Button("快速记一件事", () => CalendarWindow.EditTask(ctx, this, null, true)));
+        panel.Children.Add(shortcuts);
         homeTasks = new StackPanel();
         panel.Children.Add(Design.Card(homeTasks));
         RefreshToday();
@@ -384,7 +409,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         p.Children.Add(Design.Row(Design.Button("导出全部数据", () => { var d = new SaveFileDialog { Filter = "GlassBogo 备份|*.json", FileName = "GlassBogo-backup.json" }; if (d.ShowDialog(this) == true) ctx.Db.Export(d.FileName); }), Design.Button("从备份恢复", () => { var d = new OpenFileDialog { Filter = "GlassBogo 备份|*.json", InitialDirectory = Path.Combine(ctx.Db.DirectoryPath, "backups") }; if (d.ShowDialog(this) == true && MessageBox.Show("用所选备份替换入口和日历？当前数据会先保存恢复副本。", "恢复数据", MessageBoxButton.YesNo) == MessageBoxResult.Yes) { ctx.Db.Import(d.FileName); Design.Apply(ctx.Db.Current.Preferences.Theme); SettingsPage(); } })));
         p.Children.Add(Design.Row(Design.AsyncButton("导入旧 GlassDesk 入口", async () => { var d = new OpenFolderDialog { Title = "选择含 apps.json 的旧 Data 文件夹" }; if (d.ShowDialog(this) == true) { var result = await Platform.Sta(() => Migration.GlassDesk(ctx.Db, d.FolderName, e => Path.GetExtension(e.Target).Equals(".lnk", StringComparison.OrdinalIgnoreCase) ? Platform.Resolve(e.Target) with { Id = e.Id, Name = e.Name } : e)); MessageBox.Show(result, "迁移结果"); } }), Design.Button("导入旧日历", () => { var d = new OpenFileDialog { Filter = "日历数据|*.json", InitialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopCalendar", "data") }; if (d.ShowDialog(this) == true) MessageBox.Show(ctx.Calendar.Import(d.FileName), "迁移结果"); })));
         p.Children.Add(Design.Button("打开数据目录", () => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ctx.Db.DirectoryPath) { UseShellExecute = true })));
-        p.Children.Add(Design.Card(Design.Text("GlassBogo 0.1.0\n为轻盈的桌面与专注的工作而设计。\n独立实现；原文件始终保留原位。\n第三方：.NET / WPF（MIT），Microsoft.Data.Sqlite（MIT），SQLitePCLRaw（Apache-2.0），SQLite（Public Domain）。\n完整声明见程序目录 THIRD-PARTY-NOTICES.txt。", 13, "Muted")));
+        p.Children.Add(Design.Card(Design.Text("GlassBogo 0.1.1\n为轻盈的桌面与专注的工作而设计。\n独立实现；原文件始终保留原位。\n第三方：.NET / WPF（MIT），Microsoft.Data.Sqlite（MIT），SQLitePCLRaw（Apache-2.0），SQLite（Public Domain）。\n完整声明见程序目录 THIRD-PARTY-NOTICES.txt。", 13, "Muted")));
         content.Content = new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
     private void PluginPage()

@@ -29,22 +29,25 @@ internal sealed class DockWindow : GlassWindow
         ctx = context;
         renderedState = context.Db.Current;
         Title = "GlassBogo";
-        Height = 112;
+        Height = 118;
+        SetInsets(12);
         MinHeight = 12;
         Topmost = true;
         ShowInTaskbar = false;
         ShowActivated = false;
         ResizeMode = ResizeMode.NoResize;
-        popup = new GlassWindow { Title = "GlassBogo 分类", Width = 440, Height = 360, Topmost = true, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize };
+        popup = new GlassWindow { Title = "GlassBogo 分类", Width = 472, Height = 396, Topmost = true, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize };
         popup.MouseEnter += (_, _) => closeTimer.Stop();
         popup.MouseLeave += (_, _) => ScheduleClose();
         popup.PreviewKeyDown += PopupKeyDown;
         popup.PreviewMouseWheel += (_, e) => { if (e.Delta != 0) { ChangePage(e.Delta < 0 ? 1 : -1); e.Handled = true; } };
         popup.LostKeyboardFocus += (_, _) => ScheduleClose();
-        discoveries = Design.Button("＋", () => ctx.OpenWorkspace(true));
+        discoveries = Design.IconButton("plus", "添加入口 / 新发现", () => ctx.OpenWorkspace(true));
         discoveries.ToolTip = "添加入口 / 新发现";
         var body = new DockPanel();
-        var actions = Design.Row(Design.Button("⌕", () => ctx.OpenWorkspace()), Design.Button("▦", () => ctx.OpenCalendar()), discoveries);
+        var actions = Design.Row(Design.IconButton("search", "搜索与工作台", () => ctx.OpenWorkspace()), Design.IconButton("calendar", "日历", () => ctx.OpenCalendar()), discoveries);
+        actions.VerticalAlignment = VerticalAlignment.Center;
+        actions.Margin = new(12, 0, 0, 0);
         DockPanel.SetDock(actions, Dock.Right);
         body.Children.Add(actions);
         body.Children.Add(new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled });
@@ -98,7 +101,8 @@ internal sealed class DockWindow : GlassWindow
             var found = await ctx.Desktop.DiscoverAsync(CancellationToken.None);
             var keys = ctx.Db.Current.Entries.Select(Catalog.Identity).ToHashSet(StringComparer.Ordinal);
             var count = found.Count(e => !keys.Contains(Catalog.Identity(e)) && !ctx.Db.Current.DismissedDiscoveries.Contains(Catalog.Identity(e), StringComparer.OrdinalIgnoreCase));
-            discoveries.Content = count > 0 ? $"＋ {count}" : "＋";
+            discoveries.ToolTip = count > 0 ? $"发现 {count} 个新入口，点击整理" : "添加入口";
+            discoveries.Tag = count > 0 ? "active" : null;
         }
         catch { discoveries.ToolTip = "桌面暂不可读，点击可重新发现"; }
     }
@@ -129,14 +133,14 @@ internal sealed class DockWindow : GlassWindow
         foreach (var cat in ctx.Db.Current.Categories)
         {
             var panel = new StackPanel();
-            var mini = new UniformGrid { Columns = 2, Rows = 2, Width = 36, Height = 36, HorizontalAlignment = HorizontalAlignment.Center };
+            var mini = new UniformGrid { Columns = 2, Rows = 2, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 0, 0, 6) };
             var entries = ctx.Db.Current.Entries.Where(e => e.CategoryId == cat.Id).Take(4).ToArray();
             if (entries.Length == 0)
-                mini.Children.Add(Design.Text("▦", 22, "Accent"));
+                mini.Children.Add(Design.Icon("folder", 20));
             else
                 foreach (var entry in entries)
                 {
-                    var icon = new Image { Width = 16, Height = 16, Margin = new(1) };
+                    var icon = new Image { Width = 18, Height = 18, Margin = new(1) };
                     mini.Children.Add(icon);
                     _ = SetIcon(icon, entry);
                 }
@@ -146,7 +150,7 @@ internal sealed class DockWindow : GlassWindow
             label.TextWrapping = TextWrapping.NoWrap;
             label.HorizontalAlignment = HorizontalAlignment.Center;
             panel.Children.Add(label);
-            var button = new Button { Content = panel, Width = 86, Height = 68, Padding = new(6), ToolTip = cat.Name, AllowDrop = true };
+            var button = new Button { Content = panel, Width = 80, Height = 74, Padding = new(6), ToolTip = cat.Name, AllowDrop = true };
             System.Windows.Automation.AutomationProperties.SetName(button, cat.Name);
             button.MouseEnter += (_, _) => { pending = cat; anchor = button; openTimer.Stop(); openTimer.Start(); closeTimer.Stop(); };
             button.MouseLeave += (_, _) => { openTimer.Stop(); ScheduleClose(); };
@@ -167,7 +171,13 @@ internal sealed class DockWindow : GlassWindow
             button.ContextMenu = menu;
             strip.Children.Add(button);
         }
-        strip.Children.Add(Design.Button("＋ 分类", () => { holds++; try { Design.Prompt(this, "新建分类", save: name => ctx.Catalog.SaveCategory(null, name)); } finally { holds--; } }));
+        var add = Design.Button("＋ 分类", () => { holds++; try { Design.Prompt(this, "新建分类", save: name => ctx.Catalog.SaveCategory(null, name)); } finally { holds--; } });
+        add.Width = 76;
+        add.ToolTip = "新建分类";
+        add.Padding = new(8);
+        add.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
+        add.VerticalAlignment = VerticalAlignment.Center;
+        strip.Children.Add(add);
         PositionDock();
     }
     private async Task SetIcon(Image image, Entry entry)
@@ -189,19 +199,21 @@ internal sealed class DockWindow : GlassWindow
         if (active?.Id == category.Id && popup.IsVisible)
             return;
         active = category;
+        foreach (var tile in strip.Children.OfType<Button>()) tile.Tag = ReferenceEquals(tile, button) ? "active" : null;
         anchor = button;
         page = 0;
         DrawPopup();
         var screen = Display.FromHandle(new WindowInteropHelper(this).Handle);
         var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
-        var pos = button.PointToScreen(new Point(button.ActualWidth / 2, 0));
+        // A stable panel position avoids chasing a moving window while switching groups.
+        var pos = PointToScreen(new Point(ActualWidth / 2, 0));
         popup.Left = Math.Clamp(pos.X / scale - popup.Width / 2, screen.WorkingArea.Left / scale, Math.Max(screen.WorkingArea.Left / scale, screen.WorkingArea.Right / scale - popup.Width));
         popup.Top = Math.Max(screen.WorkingArea.Top / scale, pos.Y / scale - popup.Height - 4);
         if (!popup.IsVisible)
         {
             popup.Show();
-            Design.Reveal((FrameworkElement)popup.Content);
         }
+        popup.RevealBody();
         var pixelWidth = (int)(popup.Width * scale);
         var pixelHeight = (int)(popup.Height * scale);
         var pixelLeft = (int)Math.Clamp(pos.X - pixelWidth / 2d, screen.WorkingArea.Left, Math.Max(screen.WorkingArea.Left, screen.WorkingArea.Right - pixelWidth));
@@ -221,8 +233,9 @@ internal sealed class DockWindow : GlassWindow
         }
         var entries = ctx.Db.Current.Entries.Where(e => e.CategoryId == active.Id).ToArray();
         var layout = new DockPanel();
-        var title = Design.Text(active.Name, 19);
-        title.Margin = new(6, 2, 4, 12);
+        var title = Design.Text(active.Name, 21);
+        title.FontWeight = FontWeights.SemiBold;
+        title.Margin = new(6, 0, 4, 16);
         DockPanel.SetDock(title, Dock.Top);
         layout.Children.Add(title);
         var pages = Math.Max(1, (int)Math.Ceiling(entries.Length / 12d));
@@ -235,7 +248,7 @@ internal sealed class DockWindow : GlassWindow
         foreach (var entry in entries.Skip(page * 12).Take(12))
         {
             var content = new StackPanel();
-            var image = new Image { Width = 32, Height = 32 };
+            var image = new Image { Width = 36, Height = 36, Margin = new(0, 0, 0, 9) };
             _ = SetIcon(image, entry);
             content.Children.Add(image);
             var label = Design.Text(entry.Name, 12);
@@ -244,6 +257,7 @@ internal sealed class DockWindow : GlassWindow
             label.HorizontalAlignment = HorizontalAlignment.Center;
             content.Children.Add(label);
             var b = new Button { Content = content, ToolTip = entry.Target, Padding = new(4), AllowDrop = true };
+            b.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
             System.Windows.Automation.AutomationProperties.SetName(b, entry.Name);
             var dragged = false;
             Point start = default;
@@ -317,6 +331,7 @@ internal sealed class DockWindow : GlassWindow
         if (next == page) return;
         page = next;
         DrawPopup();
+        popup.RevealBody();
     }
     private void PopupKeyDown(object sender, KeyEventArgs e)
     {
@@ -347,6 +362,7 @@ internal sealed class DockWindow : GlassWindow
     {
         openTimer.Stop();
         active = null;
+        foreach (var tile in strip.Children.OfType<Button>()) tile.Tag = null;
         var generation = ++hideGeneration;
         if (animate && popup.IsVisible && SystemParameters.ClientAreaAnimation)
         {
@@ -359,7 +375,7 @@ internal sealed class DockWindow : GlassWindow
     private void SetCollapsed(bool value)
     {
         collapsed = value;
-        Height = value ? 20 : 112;
+        Height = value ? 20 : 118;
         strip.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
         PositionDock();
     }
@@ -368,7 +384,7 @@ internal sealed class DockWindow : GlassWindow
     {
         var area = Screen().WorkingArea;
         var scale = Screen().Scale;
-        Width = Math.Min(area.Width / scale - 32, Math.Max(440, ctx.Db.Current.Categories.Count * 94 + 250));
+        Width = Math.Min(area.Width / scale - 32, Math.Max(440, ctx.Db.Current.Categories.Count * 88 + 280));
         Left = area.Left / scale + (area.Width / scale - Width) / 2;
         Top = area.Bottom / scale - Height - 8;
         var handle = new WindowInteropHelper(this).Handle;
