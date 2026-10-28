@@ -93,13 +93,22 @@ internal static class Design
             s.Children.Add(i);
         return s;
     }
-    internal static string? Prompt(Window owner, string title, string value = "")
+    internal static string? Prompt(Window owner, string title, string value = "", Action<string>? save = null)
     {
         var window = new GlassWindow { Title = title, Width = 400, Height = 210, Owner = owner, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var input = new TextBox { Text = value, MaxLength = 200 };
+        var error = Text("", 12, "Accent");
         var panel = new StackPanel();
         panel.Children.Add(input);
-        panel.Children.Add(Row(Button("取消", () => window.DialogResult = false), Button("保存", () => { if (string.IsNullOrWhiteSpace(input.Text)) return; window.DialogResult = true; })));
+        var saveButton = Button("保存", () =>
+        {
+            if (string.IsNullOrWhiteSpace(input.Text)) { error.Text = "请输入名称。"; return; }
+            try { save?.Invoke(input.Text.Trim()); window.DialogResult = true; }
+            catch (Exception ex) { error.Text = "未保存：" + ex.Message; }
+        });
+        saveButton.IsDefault = true;
+        panel.Children.Add(Row(Button("取消", () => window.DialogResult = false), saveButton));
+        panel.Children.Add(error);
         window.SetPage(title, panel);
         window.Loaded += (_, _) => { input.Focus(); input.SelectAll(); };
         return window.ShowDialog() == true ? input.Text.Trim() : null;

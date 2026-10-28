@@ -40,6 +40,18 @@ internal static class SelfTest
                     located.Close();
                     located = null;
                     Log("category paging/keyboard/cache and duplicate-entry location verified");
+                    _ = dock.Dispatcher.BeginInvoke(() =>
+                    {
+                        var prompt = Application.Current.Windows.Cast<Window>().Single(w => w.Title == "QA 保存失败");
+                        var input = Walk(prompt).OfType<TextBox>().Single();
+                        input.Text = "需要保留的分类名称";
+                        Walk(prompt).OfType<Button>().Single(b => b.Content as string == "保存").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        if (!prompt.IsVisible || input.Text != "需要保留的分类名称" || !Walk(prompt).OfType<TextBlock>().Any(t => t.Text.Contains("模拟写入失败")))
+                            throw new InvalidOperationException("保存失败后输入内容未保留。");
+                        prompt.Close();
+                    });
+                    Design.Prompt(dock, "QA 保存失败", save: _ => throw new IOException("模拟写入失败"));
+                    Log("category save failure preserves editor and input");
                     DesktopVisibilityTest.Verify(ctx.Desktop, ctx.Db.DirectoryPath);
                     Log("desktop hide/restore/original-hidden/crash-recovery passed");
                     Snapshot(dock, Path.Combine(output, "dock.png"));

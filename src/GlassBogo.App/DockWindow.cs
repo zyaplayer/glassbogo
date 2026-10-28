@@ -158,7 +158,7 @@ internal sealed class DockWindow : GlassWindow
             var menu = new ContextMenu();
             if (cat.Id != "inbox")
             {
-                AddMenu(menu, "重命名", () => { var name = Design.Prompt(this, "分类名称", cat.Name); if (name is not null) ctx.Catalog.SaveCategory(cat.Id, name); });
+                AddMenu(menu, "重命名", () => { holds++; try { Design.Prompt(this, "分类名称", cat.Name, name => ctx.Catalog.SaveCategory(cat.Id, name)); } finally { holds--; ScheduleClose(); } });
                 AddMenu(menu, "移除分类（入口回到待整理）", () => ctx.Catalog.RemoveCategory(cat.Id));
             }
             AddMenu(menu, "添加入口", () => ctx.OpenWorkspace(true));
@@ -167,7 +167,7 @@ internal sealed class DockWindow : GlassWindow
             button.ContextMenu = menu;
             strip.Children.Add(button);
         }
-        strip.Children.Add(Design.Button("＋ 分类", () => { holds++; try { var name = Design.Prompt(this, "新建分类"); if (name is not null) ctx.Catalog.SaveCategory(null, name); } finally { holds--; } }));
+        strip.Children.Add(Design.Button("＋ 分类", () => { holds++; try { Design.Prompt(this, "新建分类", save: name => ctx.Catalog.SaveCategory(null, name)); } finally { holds--; } }));
         PositionDock();
     }
     private async Task SetIcon(Image image, Entry entry)

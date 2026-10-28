@@ -404,7 +404,14 @@ internal sealed class WorkspaceWindow : GlassWindow
             var row = new StackPanel();
             row.Children.Add(Design.Text(m.Name + " · " + m.Version, 18));
             row.Children.Add(Design.Text(string.Join(" / ", m.Capabilities), 12, "Muted"));
-            row.Children.Add(Design.Row(Design.Button(enabled ? "停用" : "启用", () => { if (!enabled && MessageBox.Show($"启用 {m.Name}？\n能力：{string.Join("、", m.Capabilities)}\n插件作为当前用户的独立程序运行。", "启用插件", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return; ctx.Db.Update(s => s.Plugins[m.Id] = !enabled); PluginPage(); }), Design.Button("打开", () => { if (!ctx.Db.Current.Plugins.GetValueOrDefault(m.Id)) throw new InvalidOperationException("请先启用插件。"); OpenPlugin(m, item.Folder, m.Capabilities.FirstOrDefault() ?? "page"); }), Design.Button("卸载", () => { if (MessageBox.Show("卸载此插件？", "GlassBogo", MessageBoxButton.YesNo) == MessageBoxResult.Yes) { ctx.Plugins.Uninstall(m); PluginPage(); } })));
+            row.Children.Add(Design.Row(Design.Button(enabled ? "停用" : "启用", () => { if (!enabled && MessageBox.Show($"启用 {m.Name}？\n来源：本地插件目录\n{item.Folder}\n能力：{string.Join("、", m.Capabilities)}\n插件作为当前用户的独立程序运行。", "启用插件", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return; ctx.Db.Update(s => s.Plugins[m.Id] = !enabled); PluginPage(); }), Design.Button("卸载", () => { if (MessageBox.Show("卸载此插件？", "GlassBogo", MessageBoxButton.YesNo) == MessageBoxResult.Yes) { ctx.Plugins.Uninstall(m); PluginPage(); } })));
+            var extensions = new StackPanel { Orientation = Orientation.Horizontal };
+            foreach (var capability in m.Capabilities.Where(c => c != "entry-menu"))
+            {
+                var label = capability switch { "card" => "打开卡片", "page" => "打开页面", "command" => "执行命令", _ => capability };
+                extensions.Children.Add(Design.Button(label, () => { if (!ctx.Db.Current.Plugins.GetValueOrDefault(m.Id)) throw new InvalidOperationException("请先启用插件。"); OpenPlugin(m, item.Folder, capability); }));
+            }
+            row.Children.Add(extensions);
             p.Children.Add(Design.Card(row));
         }
         content.Content = new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
