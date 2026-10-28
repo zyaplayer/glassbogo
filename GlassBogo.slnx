@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/FocusPlugin/FocusPlugin.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/GlassBogo.App/GlassBogo.App.csproj" />
+    <Project Path="src/GlassBogo.Core/GlassBogo.Core.csproj" />
+    <Project Path="src/GlassBogo.PluginSdk/GlassBogo.PluginSdk.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FaultPlugin/FaultPlugin.csproj" />
+    <Project Path="tests/GlassBogo.DesktopHarness/GlassBogo.DesktopHarness.csproj" />
+    <Project Path="tests/GlassBogo.Tests/GlassBogo.Tests.csproj" />
+    <Project Path="tests/GlassBogo.WindowsTests/GlassBogo.WindowsTests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/GlassBogo.Icon/GlassBogo.Icon.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+artifacts/
+.test-data/
+*.user
+*.db*
+*.log
+Data/

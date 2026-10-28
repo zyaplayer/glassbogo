@@ -1,0 +1,16 @@
+{
+  "id": "glassbogo.focus",
+  "name": "专注小记",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "executable": "FocusPlugin.exe",
+  "capabilities": [
+    "card",
+    "page",
+    "command",
+    "entry-menu"
+  ],
+  "subscriptions": [
+    "workspace.changed"
+  ]
+}

@@ -1,0 +1,26 @@
+GlassBogo third-party notices
+
+GlassBogo application source and visual design are independently authored for
+this project. No GlassDesk source, shaders or brand assets are incorporated.
+
+.NET / WPF runtime
+Copyright (c) .NET Foundation and Contributors; Microsoft Corporation.
+See licenses/DOTNET-LICENSE.txt and licenses/DOTNET-ThirdPartyNotices.txt.
+
+Microsoft.Data.Sqlite / Microsoft.Data.Sqlite.Core 10.0.0
+Copyright (c) .NET Foundation and Contributors. MIT License.
+See licenses/Microsoft.Data.Sqlite-MIT.txt.
+https://github.com/dotnet/efcore
+
+SQLitePCLRaw core, provider.e_sqlite3, config.e_sqlite3, bundle_e_sqlite3 3.0.5
+Copyright 2014-2025 SourceGear, LLC. Apache License 2.0.
+See licenses/SQLitePCLRaw-Apache-2.0.txt.
+https://github.com/ericsink/SQLitePCL.raw
+
+SQLite 3.53.4
+SQLite is in the public domain. See licenses/SQLite-Public-Domain.txt.
+https://sqlite.org/copyright.html
+
+The application does not grant a new license to these dependencies. They
+remain available under their respective terms. Rebuilds should update this
+inventory if package or runtime versions change.

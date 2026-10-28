@@ -1,0 +1,14 @@
+global using System;
+global using System.Collections.Generic;
+global using System.IO;
+global using System.Linq;
+global using System.Threading;
+global using System.Threading.Tasks;
+global using System.Windows;
+global using System.Windows.Controls;
+global using System.Windows.Input;
+global using System.Windows.Media;
+global using GlassBogo.Core;
+global using Button = System.Windows.Controls.Button;
+global using Application = System.Windows.Application;
+global using MessageBox = System.Windows.MessageBox;
