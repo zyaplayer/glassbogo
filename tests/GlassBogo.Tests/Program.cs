@@ -84,6 +84,35 @@ Test("钉住顺序与取消钉住", () =>
     c.SetPinned([b.Id], false);
     Check(c.Pinned().Single().Id == a.Id && db.Current.Entries.Single(e => e.Id == b.Id).PinOrder == 0);
 });
+Test("最近使用排序与上限", () =>
+{
+    using var db = New();
+    var c = new Catalog(db);
+    var a = c.Add(Item("A", "a"));
+    var b = c.Add(Item("B", "b"));
+    c.Touch(a.Id, new DateTime(2026, 10, 29, 10, 0, 0));
+    c.Touch(b.Id, new DateTime(2026, 10, 29, 11, 0, 0));
+    Check(c.Recents(1).Single().Id == b.Id && c.Recents(5).Count() == 2);
+    Check(db.Current.Entries.Single(e => e.Id == b.Id).LastUsed == "2026-10-29T11:00:00");
+});
+Test("搜索按名称目标命中并限流", () =>
+{
+    using var db = New();
+    var c = new Catalog(db);
+    c.Add(Item("Visual Studio", @"C:\Apps\devenv.exe"));
+    c.Add(Item("记事本", @"C:\Windows\notepad.exe"));
+    Check(Finder.Entries(db.Current.Entries, "stu").Single().Name == "Visual Studio");
+    Check(Finder.Entries(db.Current.Entries, "notepad").Single().Name == "记事本");
+    Check(Finder.Entries(db.Current.Entries, " ").Count == 0);
+    Check(Finder.Entries(db.Current.Entries, "e", 1).Count == 1);
+    Check(Finder.Files([@"C:\a\季度报告.docx", @"C:\a\会议记录.txt"], "报告").Single().EndsWith("季度报告.docx"));
+    Check(Finder.Files([@"C:\a\x.txt"], "").Count == 0);
+});
+Test("最近使用时间非法被拒绝", () =>
+{
+    using var db = New();
+    Throws(() => db.Update(s => s.Entries.Add(Item("X", "x") with { LastUsed = "昨天" })));
+});
 Test("钉住状态持久化且拒绝非法顺序", () =>
 {
     string path;

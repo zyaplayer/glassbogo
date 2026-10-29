@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace GlassBogo.Core;
 
 public record Category(string Id, string Name);
-public record Entry(string Id, string Name, string Target, string Kind = "path", string Arguments = "", string WorkingDirectory = "", string CategoryId = "inbox", bool Pinned = false, double PinOrder = 0);
+public record Entry(string Id, string Name, string Target, string Kind = "path", string Arguments = "", string WorkingDirectory = "", string CategoryId = "inbox", bool Pinned = false, double PinOrder = 0, string? LastUsed = null);
 public record TaskCategory(string Id, string Name, string Color);
 public record CalendarTask(string Id, string Title, string Date, string Time = "", string Notes = "", string Priority = "normal", bool Completed = false, double Order = 0, string? CategoryId = null);
 public record Preferences(string Theme = "system", string? Monitor = null, bool AutoHide = false, bool Onboarded = false, string QuickShortcut = "N", bool AutoStart = false, bool HardwareAcceleration = false);
@@ -51,6 +51,8 @@ public static class DataJson
             throw new InvalidDataException("入口数据无效。");
         if (s.Entries.Any(e => !double.IsFinite(e.PinOrder)))
             throw new InvalidDataException("钉住排序值无效。");
+        if (s.Entries.Any(e => e.LastUsed is { } used && !DateTime.TryParse(used, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out _)))
+            throw new InvalidDataException("最近使用时间无效。");
         if (s.Tasks.Select(t => t.Id).Distinct().Count() != s.Tasks.Count)
             throw new InvalidDataException("任务标识重复。");
         foreach (var t in s.Tasks)

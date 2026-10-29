@@ -201,8 +201,12 @@ internal sealed class AppContext : IDisposable
     internal async Task Open(Entry entry)
     {
         var result = await Launch.LaunchAsync(entry);
-        if (!result.Success)
-            MessageBox.Show(result.Error, "无法打开入口", MessageBoxButton.OK, MessageBoxImage.Warning);
+        if (result.Success)
+        {
+            try { Catalog.Touch(entry.Id, DateTime.Now); } catch (Exception ex) { Design.Error(ex); }
+            return;
+        }
+        MessageBox.Show(result.Error, "无法打开入口", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
     public void Dispose()
     {

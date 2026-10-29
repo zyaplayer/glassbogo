@@ -24,6 +24,7 @@ internal sealed class DockWindow : GlassWindow
     private readonly TranslateTransform selectionShift = new();
     private Category? pending, active; private Button? anchor; private int page;
     private bool gridMode; private Button? gridAnchor; private Button[] gridButtons = [];
+    private string[] archiveFiles = []; private DateTime archiveIndexAt;
     private nint hook; private nint locationHook; private readonly Native.WinEventProc foregroundCallback;
     private HwndSource? source; private bool collapsed; private readonly Button discoveries;
     private bool disposed;
@@ -346,18 +347,47 @@ internal sealed class DockWindow : GlassWindow
         manage.Width = manage.Height = 36;
         DockPanel.SetDock(manage, Dock.Right);
         header.Children.Add(manage);
+        var searchBox = new TextBox { Width = 200, Margin = new(6, 8, 6, 8), ToolTip = "搜索入口和归档文件，Enter 打开第一个" };
+        DockPanel.SetDock(searchBox, Dock.Right);
+        header.Children.Add(searchBox);
         var title = Design.Text($"全部分类  ·  {ctx.Db.Current.Categories.Count}", 18);
         title.FontWeight = FontWeights.SemiBold;
         title.Margin = new(6, 0, 4, 0);
         header.Children.Add(title);
         DockPanel.SetDock(header, Dock.Top);
         layout.Children.Add(header);
+
         var footer = Design.Row(
-            Design.Text("点分类看入口；右键可重命名或移除。", 12, "Muted"),
+            Design.Text("点分类看入口；输入即搜入口和归档文件。", 12, "Muted"),
             Design.Button("新建分类", () => { HidePopup(); ctx.OpenWorkspace(); }));
         footer.Height = 44;
         DockPanel.SetDock(footer, Dock.Bottom);
         layout.Children.Add(footer);
+
+        var host = new Grid();
+        var results = new StackPanel();
+        var resultsScroll = new ScrollViewer { Content = results, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Visibility = Visibility.Collapsed };
+        host.Children.Add(resultsScroll);
+
+        var browse = new StackPanel();
+        var recents = ctx.Catalog.Recents(8).ToArray();
+        if (recents.Length > 0)
+        {
+            browse.Children.Add(SectionLabel("最近用过"));
+            var row = new WrapPanel();
+            foreach (var entry in recents)
+            {
+                var image = new Image { Width = 24, Height = 24, Margin = new(0, 0, 6, 0) };
+                RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+                _ = SetIcon(image, entry);
+                var button = new Button { Content = Design.Row(image, Design.Text(entry.Name, 12)), Padding = new(10, 5, 10, 5), Margin = new(0, 0, 6, 6), ToolTip = entry.Target };
+                button.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
+                button.Click += async (_, _) => { HidePopup(); SetCollapsed(true); await ctx.Open(entry); };
+                row.Children.Add(button);
+            }
+            browse.Children.Add(row);
+        }
+        browse.Children.Add(SectionLabel("全部分类"));
         var grid = new UniformGrid { Columns = 4 };
         var buttons = new List<Button>();
         foreach (var cat in ctx.Db.Current.Categories)
@@ -403,9 +433,102 @@ internal sealed class DockWindow : GlassWindow
             grid.Children.Add(button);
             buttons.Add(button);
         }
-        visibleEntries = gridButtons = buttons.ToArray();
-        layout.Children.Add(new ScrollViewer { Content = grid, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var gridScroll = new ScrollViewer { Content = browse, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        browse.Children.Add(grid);
+        host.Children.Add(gridScroll);
+        layout.Children.Add(host);
+        Array.ForEach(grid.Children.OfType<Button>().ToArray(), b => b.Tag = null);
+        gridButtons = buttons.ToArray();
+        visibleEntries = gridButtons;
+
+        void RefreshResults()
+        {
+            var query = searchBox.Text.Trim();
+            results.Children.Clear();
+            if (query.Length == 0)
+            {
+                resultsScroll.Visibility = Visibility.Collapsed;
+                gridScroll.Visibility = Visibility.Visible;
+                visibleEntries = gridButtons;
+                return;
+            }
+            var hits = new List<Button>();
+            foreach (var entry in Finder.Entries(ctx.Db.Current.Entries, query, 6))
+            {
+                var target = entry;
+                var button = ResultButton(target.Name, target.Target, () => { HidePopup(); SetCollapsed(true); _ = ctx.Open(target); });
+                results.Children.Add(button);
+                hits.Add(button);
+            }
+            foreach (var file in Finder.Files(ArchiveFiles(), query, 6))
+            {
+                var path = file;
+                var button = ResultButton(Path.GetFileName(path), Path.GetDirectoryName(path) ?? "", () => { HidePopup(); SetCollapsed(true); OpenPath(path); });
+                results.Children.Add(button);
+                hits.Add(button);
+            }
+            if (hits.Count == 0)
+                results.Children.Add(Design.Text("没有匹配的入口或归档文件。", 13, "Muted"));
+            visibleEntries = hits.ToArray();
+            gridScroll.Visibility = Visibility.Collapsed;
+            resultsScroll.Visibility = Visibility.Visible;
+        }
+        searchBox.TextChanged += (_, _) => RefreshResults();
+        searchBox.KeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Enter || visibleEntries.Length == 0 || searchBox.Text.Trim().Length == 0)
+                return;
+            visibleEntries[0].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            e.Handled = true;
+        };
         return layout;
+    }
+    private static TextBlock SectionLabel(string text)
+    {
+        var label = Design.Text(text, 12, "Muted");
+        label.Margin = new(6, 8, 0, 6);
+        return label;
+    }
+    private static Button ResultButton(string name, string hint, Action open)
+    {
+        var panel = new DockPanel { LastChildFill = true };
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(Design.Text(name, 14));
+        var muted = Design.Text(hint, 11, "Muted");
+        muted.TextTrimming = TextTrimming.CharacterEllipsis;
+        muted.TextWrapping = TextWrapping.NoWrap;
+        text.Children.Add(muted);
+        panel.Children.Add(text);
+        var button = new Button { Content = panel, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new(0, 0, 0, 4), Padding = new(10, 6, 10, 6), ToolTip = hint };
+        button.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
+        button.Click += (_, _) => open();
+        System.Windows.Automation.AutomationProperties.SetName(button, name);
+        return button;
+    }
+    private string[] ArchiveFiles()
+    {
+        if (archiveFiles.Length > 0 && DateTime.UtcNow - archiveIndexAt < TimeSpan.FromSeconds(20))
+            return archiveFiles;
+        var list = new List<string>();
+        foreach (var batch in ctx.Harvest.History().Take(12))
+        {
+            if (!Directory.Exists(batch.ArchiveRoot))
+                continue;
+            try
+            {
+                foreach (var path in Directory.EnumerateFileSystemEntries(batch.ArchiveRoot, "*", SearchOption.AllDirectories).Take(2000))
+                    list.Add(path);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        archiveFiles = [.. list];
+        archiveIndexAt = DateTime.UtcNow;
+        return archiveFiles;
+    }
+    private void OpenPath(string path)
+    {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
+        catch (Exception ex) { Design.Error(ex); }
     }
     private void Present(bool fresh, bool wasClosing, bool clicked, int generation, double widthDip = 472, double heightDip = 396)
     {
@@ -746,6 +869,9 @@ internal sealed class DockWindow : GlassWindow
     {
         if (!strip.Children.OfType<Button>().Any(b => (b.ToolTip as string) == "全部分类"))
             throw new InvalidOperationException("Dock 缺少分类按钮。");
+        var stamp = DateTime.Now;
+        ctx.Catalog.Touch(ctx.Db.Current.Entries[0].Id, stamp);
+        ctx.Catalog.Touch(ctx.Db.Current.Entries[1].Id, stamp.AddMinutes(1));
         ShowGrid();
         if (!popup.IsVisible || gridButtons.Length != ctx.Db.Current.Categories.Count)
             throw new InvalidOperationException("分类网格未生成。");
@@ -755,7 +881,25 @@ internal sealed class DockWindow : GlassWindow
             .SelectMany(g => g.Children.OfType<Image>()).ToArray();
         if (previews.Length == 0 || previews.Any(i => i.Source is null))
             throw new InvalidOperationException("分类预览图标未加载。");
+        if (!Walk(popup).OfType<TextBlock>().Any(t => t.Text == "最近用过"))
+            throw new InvalidOperationException("最近用过区域未出现。");
+        var searchBox = Walk(popup).OfType<TextBox>().FirstOrDefault()
+            ?? throw new InvalidOperationException("分类网格缺少搜索框。");
+        searchBox.Text = "示例应用 1";
+        if (visibleEntries.Length == 0)
+            throw new InvalidOperationException("搜索没有返回结果。");
+        searchBox.Text = "";
         HidePopup();
+    }
+    private static IEnumerable<DependencyObject> Walk(DependencyObject root)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var nested in Walk(child))
+                yield return nested;
+        }
     }
     internal void QaVerifyNavigation()
     {

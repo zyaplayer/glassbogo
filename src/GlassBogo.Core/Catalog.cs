@@ -43,6 +43,12 @@ public sealed class Catalog(Database db) : IEntryCatalog
     }
     public IEnumerable<Entry> Search(string query) => db.Current.Entries.Where(e => e.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) || e.Target.Contains(query, StringComparison.CurrentCultureIgnoreCase));
     public IEnumerable<Entry> Pinned() => db.Current.Entries.Where(e => e.Pinned).OrderBy(e => e.PinOrder).ThenBy(e => e.Name, StringComparer.CurrentCulture);
+    public void Touch(string id, DateTime now)
+    {
+        var stamp = now.ToString("s");
+        db.Update(s => { var at = s.Entries.FindIndex(e => e.Id == id); if (at >= 0) s.Entries[at] = s.Entries[at] with { LastUsed = stamp }; });
+    }
+    public IEnumerable<Entry> Recents(int count = 8) => db.Current.Entries.Where(e => e.LastUsed is not null).OrderByDescending(e => e.LastUsed, StringComparer.Ordinal).Take(count);
     public void SetPinned(IEnumerable<string> ids, bool pinned)
     {
         var selected = ids.ToHashSet();
