@@ -22,6 +22,7 @@ internal sealed class CordWindow : GlassWindow
     private readonly Native.WinEventProc foregroundCallback;
     private nint hook;
     private CalendarPanelWindow? panel;
+    private bool closed;
 
     internal CordWindow(AppContext context)
     {
@@ -61,6 +62,7 @@ internal sealed class CordWindow : GlassWindow
         SystemEvents.DisplaySettingsChanged += DisplaySettings;
         Closed += (_, _) =>
         {
+            closed = true;
             openTimer.Stop();
             closeTimer.Stop();
             environmentTimer.Stop();
@@ -74,6 +76,8 @@ internal sealed class CordWindow : GlassWindow
 
     private void Place()
     {
+        if (closed)
+            return;
         var screen = Display.PrimaryScreen!;
         var scale = screen.Scale;
         var work = screen.WorkingArea;
@@ -92,7 +96,7 @@ internal sealed class CordWindow : GlassWindow
 
     private void AssessForeground()
     {
-        if (ctx.Closing)
+        if (closed || ctx.Closing)
             return;
         var hwnd = Native.GetForegroundWindow();
         if (hwnd == new WindowInteropHelper(this).Handle)
@@ -120,6 +124,8 @@ internal sealed class CordWindow : GlassWindow
 
     private void Pull()
     {
+        if (closed)
+            return;
         panel ??= new CalendarPanelWindow(ctx, ScheduleClose);
         panel.PlaceUnder();
         if (!panel.IsVisible)
@@ -129,7 +135,7 @@ internal sealed class CordWindow : GlassWindow
 
     private void Push()
     {
-        if (panel is null || !panel.IsVisible)
+        if (closed || panel is null || !panel.IsVisible)
             return;
         if (panel.IsKeyboardFocusWithin || panel.HasModalInput)
             return;
