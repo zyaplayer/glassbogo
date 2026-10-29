@@ -289,11 +289,11 @@ internal class GlassWindow : Window
         var cornerResult = Native.DwmSetWindowAttribute(handle, 33, ref corner, 4);
         var noNativeBorder = unchecked((int)0xFFFFFFFE);
         var borderResult = Native.DwmSetWindowAttribute(handle, 34, ref noNativeBorder, 4);
-        var backdrop = GlassEnvironment.Transparency ? (TransientMaterial ? 3 : 2) : 1;
+        var backdrop = surfaceHidden ? 1 : GlassEnvironment.Transparency ? (TransientMaterial ? 3 : 2) : 1;
         var result = Native.DwmSetWindowAttribute(handle, 38, ref backdrop, 4);
-        var margins = GlassEnvironment.Transparency && result == 0 ? new Margins { Left = -1 } : new Margins();
+        var margins = !surfaceHidden && GlassEnvironment.Transparency && result == 0 ? new Margins { Left = -1 } : new Margins();
         var extendResult = DwmExtendFrameIntoClientArea(handle, ref margins);
-        var composed = result == 0 && extendResult == 0 && GlassEnvironment.Transparency;
+        var composed = !surfaceHidden && result == 0 && extendResult == 0 && GlassEnvironment.Transparency;
         if (composed)
         {
             frame.SetResourceReference(Border.BackgroundProperty, "SurfaceTint");
@@ -315,6 +315,9 @@ internal class GlassWindow : Window
         {
             frame.Background = Brushes.Transparent;
             frame.BorderBrush = Brushes.Transparent;
+            // 收起态必须让窗口本身也透明，否则 WPF 合成背色会糊成一块浅色胶囊。
+            if (HwndSource.FromHwnd(handle)?.CompositionTarget is { } hiddenTarget)
+                hiddenTarget.BackgroundColor = Colors.Transparent;
         }
     }
     internal void SetSurfaceHidden(bool hidden)
@@ -325,11 +328,13 @@ internal class GlassWindow : Window
             frame.Background = Brushes.Transparent;
             frame.BorderBrush = Brushes.Transparent;
             highlight.Visibility = Visibility.Collapsed;
+            UpdateBackdrop();
             return;
         }
         highlight.Visibility = Visibility.Visible;
         frame.SetResourceReference(Border.BorderBrushProperty, "Line");
         frame.SetResourceReference(Border.BackgroundProperty, "Surface");
+        UpdateBackdrop();
     }
     internal void StopBodyTransition()
     {
