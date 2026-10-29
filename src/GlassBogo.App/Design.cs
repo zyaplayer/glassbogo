@@ -236,6 +236,8 @@ internal static class Design
 internal class GlassWindow : Window
 {
     private readonly Border frame;
+    private readonly Border highlight;
+    private bool surfaceHidden;
     private readonly Grid bodyHost = new();
     private UIElement? currentBody;
     private int bodyGeneration;
@@ -268,9 +270,9 @@ internal class GlassWindow : Window
         frame.SetResourceReference(Border.BackgroundProperty, "Surface");
         var layers = new Grid();
         layers.Children.Add(frame);
-        var highlight = new Border { Height = 1, Margin = new(28, 1, 28, 0), VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
-        highlight.SetResourceReference(Border.BackgroundProperty, "SpecularTop");
-        layers.Children.Add(highlight);
+        var highlightBorder = highlight = new Border { Height = 1, Margin = new(28, 1, 28, 0), VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
+        highlightBorder.SetResourceReference(Border.BackgroundProperty, "SpecularTop");
+        layers.Children.Add(highlightBorder);
         Content = SurfaceRoot = layers;
         SourceInitialized += (_, _) => UpdateBackdrop();
         Closed += (_, _) => StopBodyTransition();
@@ -309,6 +311,25 @@ internal class GlassWindow : Window
                 target.BackgroundColor = ((SolidColorBrush)Application.Current.Resources["SurfaceFallback"]).Color;
         }
         BackdropStatus = $"requested={backdrop}; DWM=0x{result:X8}; extend=0x{extendResult:X8}; theme=0x{themeResult:X8}; corner=0x{cornerResult:X8}; border=0x{borderResult:X8}; composed-request={composed}; build={Environment.OSVersion.Version}";
+        if (surfaceHidden)
+        {
+            frame.Background = Brushes.Transparent;
+            frame.BorderBrush = Brushes.Transparent;
+        }
+    }
+    internal void SetSurfaceHidden(bool hidden)
+    {
+        surfaceHidden = hidden;
+        if (hidden)
+        {
+            frame.Background = Brushes.Transparent;
+            frame.BorderBrush = Brushes.Transparent;
+            highlight.Visibility = Visibility.Collapsed;
+            return;
+        }
+        highlight.Visibility = Visibility.Visible;
+        frame.SetResourceReference(Border.BorderBrushProperty, "Line");
+        frame.SetResourceReference(Border.BackgroundProperty, "Surface");
     }
     internal void StopBodyTransition()
     {

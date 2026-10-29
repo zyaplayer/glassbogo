@@ -21,17 +21,20 @@ internal sealed class EntryRow : INotifyPropertyChanged
         get; private set;
     }
     private bool loaded;
-    internal EntryRow(Entry entry, string category, Action<Entry> open, Action<Entry> classify, Action<Entry> remove)
+    internal EntryRow(Entry entry, string category, Action<Entry> open, Action<Entry> classify, Action<Entry> remove, Action<Entry> pin)
     {
         Entry = entry;
         Hint = category + "  ·  " + entry.Target;
         OpenCommand = new Relay(() => open(entry));
         ClassifyCommand = new Relay(() => classify(entry));
         RemoveCommand = new Relay(() => remove(entry));
+        PinCommand = new Relay(() => pin(entry));
     }
     public ICommand OpenCommand { get; }
     public ICommand ClassifyCommand { get; }
     public ICommand RemoveCommand { get; }
+    public ICommand PinCommand { get; }
+    public string PinLabel => Entry.Pinned ? "取消钉住" : "钉住";
     public event PropertyChangedEventHandler? PropertyChanged;
     internal async Task Load(AppContext ctx)
     {
@@ -120,6 +123,14 @@ internal sealed class WorkspaceWindow : GlassWindow
             action.SetBinding(Button.CommandProperty, new Binding(command));
             actions.AppendChild(action);
         }
+        var pin = new FrameworkElementFactory(typeof(Button));
+        pin.SetValue(Control.FontSizeProperty, 11d);
+        pin.SetValue(FrameworkElement.MarginProperty, new Thickness(10, 0, 0, 0));
+        pin.SetValue(Control.PaddingProperty, new Thickness(9, 3, 9, 3));
+        pin.SetValue(FrameworkElement.ToolTipProperty, "钉到底部 Dock 上");
+        pin.SetBinding(ContentControl.ContentProperty, new Binding("PinLabel"));
+        pin.SetBinding(Button.CommandProperty, new Binding("PinCommand"));
+        actions.AppendChild(pin);
         row.AppendChild(actions);
         var text = new FrameworkElementFactory(typeof(StackPanel));
         text.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
@@ -307,12 +318,13 @@ internal sealed class WorkspaceWindow : GlassWindow
         if (page != "entries")
             return;
         var id = (string?)filter.SelectedValue;
-        var rows = ctx.Catalog.Search(search.Text.Trim()).Where(e => string.IsNullOrEmpty(id) || e.CategoryId == id).Select(e => new EntryRow(e, ctx.Db.Current.Categories.First(c => c.Id == e.CategoryId).Name, entry => _ = ctx.Open(entry), ClassifyOne, RemoveOne)).ToArray();
+        var rows = ctx.Catalog.Search(search.Text.Trim()).Where(e => string.IsNullOrEmpty(id) || e.CategoryId == id).Select(e => new EntryRow(e, ctx.Db.Current.Categories.First(c => c.Id == e.CategoryId).Name, entry => _ = ctx.Open(entry), ClassifyOne, RemoveOne, PinOne)).ToArray();
         entries.ItemsSource = rows;
         status.Text = $"{rows.Length} 个入口 · Ctrl / Shift 可多选；拖到下方分类调整归属。";
     }
     private void MoveSelected() => Move(SelectedIds());
     private void ClassifyOne(Entry entry) => Move([entry.Id]);
+    private void PinOne(Entry entry) => ctx.Catalog.SetPinned([entry.Id], !entry.Pinned);
     private void RemoveOne(Entry entry) => Remove([entry.Id]);
     private void Remove(string[] ids)
     {
@@ -468,6 +480,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         shortcut.SelectionChanged += (_, _) => Design.Guard(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { QuickShortcut = (string)shortcut.SelectedItem }));
         p.Children.Add(Design.Row(Design.Text("速记快捷键 Ctrl+Alt+（空白表示关闭）"), shortcut));
         p.Children.Add(Design.Text(ctx.Dock?.ShortcutStatus ?? "", 12, "Muted"));
+        p.Children.Add(Design.Text(ctx.Dock?.SummonStatus ?? "", 12, "Muted"));
         p.Children.Add(Design.Row(Design.Button("导出全部数据", () => { var d = new SaveFileDialog { Filter = "GlassBogo 备份|*.json", FileName = "GlassBogo-backup.json" }; if (d.ShowDialog(this) == true) ctx.Db.Export(d.FileName); }), Design.Button("从备份恢复", () => { var d = new OpenFileDialog { Filter = "GlassBogo 备份|*.json", InitialDirectory = Path.Combine(ctx.Db.DirectoryPath, "backups") }; if (d.ShowDialog(this) == true && MessageBox.Show("用所选备份替换入口和日历？当前数据会先保存恢复副本。", "恢复数据", MessageBoxButton.YesNo) == MessageBoxResult.Yes) { ctx.Db.Import(d.FileName); Design.Apply(ctx.Db.Current.Preferences.Theme); SettingsPage(); } })));
         p.Children.Add(Design.Row(Design.AsyncButton("导入旧 GlassDesk 入口", async () => { var d = new OpenFolderDialog { Title = "选择含 apps.json 的旧 Data 文件夹" }; if (d.ShowDialog(this) == true) { var result = await Platform.Sta(() => Migration.GlassDesk(ctx.Db, d.FolderName, e => Path.GetExtension(e.Target).Equals(".lnk", StringComparison.OrdinalIgnoreCase) ? Platform.Resolve(e.Target) with { Id = e.Id, Name = e.Name } : e)); MessageBox.Show(result, "迁移结果"); } }), Design.Button("导入旧日历", () => { var d = new OpenFileDialog { Filter = "日历数据|*.json", InitialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopCalendar", "data") }; if (d.ShowDialog(this) == true) MessageBox.Show(ctx.Calendar.Import(d.FileName), "迁移结果"); })));
         p.Children.Add(Design.Button("打开数据目录", () => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ctx.Db.DirectoryPath) { UseShellExecute = true })));

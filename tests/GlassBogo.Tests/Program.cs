@@ -72,6 +72,26 @@ Test("高缩放小工作区浮层不越界", () =>
 });
 // ---- 桌面收纳：唯一会移动用户文件的路径 ----
 string HarvestDesk(string tag) { var dir = Path.Combine(root, "desk-" + tag); Directory.CreateDirectory(dir); return dir; }
+Test("钉住顺序与取消钉住", () =>
+{
+    using var db = New();
+    var c = new Catalog(db);
+    var a = c.Add(Item("A", "a"));
+    var b = c.Add(Item("B", "b"));
+    c.SetPinned([b.Id], true);
+    c.SetPinned([a.Id], true);
+    Check(c.Pinned().Select(e => e.Id).SequenceEqual([b.Id, a.Id]));
+    c.SetPinned([b.Id], false);
+    Check(c.Pinned().Single().Id == a.Id && db.Current.Entries.Single(e => e.Id == b.Id).PinOrder == 0);
+});
+Test("钉住状态持久化且拒绝非法顺序", () =>
+{
+    string path;
+    using (var db = New()) { var c = new Catalog(db); c.SetPinned([c.Add(Item("A", "a")).Id], true); path = db.DirectoryPath; }
+    using (var reopened = new Database(path)) Check(reopened.Current.Entries.Single().Pinned);
+    using var bad = New();
+    Throws(() => bad.Update(s => s.Entries.Add(Item("X", "x") with { Pinned = true, PinOrder = double.NaN })));
+});
 Test("收纳规划跳过系统文件与不存在项", () =>
 {
     var desktop = HarvestDesk("plan");

@@ -27,6 +27,10 @@ internal sealed class DockWindow : GlassWindow
     private nint hook; private nint locationHook; private readonly Native.WinEventProc foregroundCallback;
     private HwndSource? source; private bool collapsed; private readonly Button discoveries;
     private bool disposed;
+    private readonly Border line = new() { Width = 60, Height = 6, CornerRadius = new(3), Opacity = .38, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+    private readonly DispatcherTimer expandTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
+    private FrameworkElement? bodyPanel;
+    internal string SummonStatus { get; private set; } = "";
     internal string ShortcutStatus { get; private set; } = "";
     internal override void UpdateBackdrop()
     {
@@ -78,7 +82,12 @@ internal sealed class DockWindow : GlassWindow
         var scroller = new ScrollViewer { Content = categoryLayer, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
         scroller.PreviewMouseWheel += (_, e) => { scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - e.Delta); e.Handled = true; };
         body.Children.Add(scroller);
-        SetBody(body);
+        line.SetResourceReference(Border.BackgroundProperty, "Ink");
+        var shell = new Grid();
+        shell.Children.Add(body);
+        shell.Children.Add(line);
+        bodyPanel = body;
+        SetBody(shell);
         openTimer.Tick += (_, _) => { openTimer.Stop(); if (pending is not null && anchor is not null && hover.Pending == pending.Id) ShowCategory(pending, anchor); };
         closeTimer.Tick += (_, _) =>
         {
@@ -86,10 +95,11 @@ internal sealed class DockWindow : GlassWindow
             if (hover.IsHeld || popup.IsMouseOver || IsMouseOver || popup.IsKeyboardFocusWithin) return;
             if (PointerInCorridor()) { closeTimer.Start(); return; }
             HidePopup(true);
-            if (ctx.Db.Current.Preferences.AutoHide) SetCollapsed(true);
+            SetCollapsed(true);
         };
-        MouseEnter += (_, _) => { hover.SetHold(HoldReason.PointerInDock, true); ResumePopup(); if (collapsed) SetCollapsed(false); };
-        MouseLeave += (_, _) => { hover.SetHold(HoldReason.PointerInDock, false); ScheduleClose(); };
+        MouseEnter += (_, _) => { hover.SetHold(HoldReason.PointerInDock, true); ResumePopup(); if (collapsed) { expandTimer.Stop(); expandTimer.Start(); } };
+        MouseLeave += (_, _) => { hover.SetHold(HoldReason.PointerInDock, false); expandTimer.Stop(); ScheduleClose(); };
+        expandTimer.Tick += (_, _) => { expandTimer.Stop(); if (IsMouseOver) SetCollapsed(false); };
         environmentTimer.Tick += (_, _) => { environmentTimer.Stop(); AssessForeground(); };
         foregroundCallback = (_, ev, hwnd, obj, _, _, _) => { if (ev == 3 || hwnd == Native.GetForegroundWindow() && obj == 0) Dispatcher.BeginInvoke(() => { environmentTimer.Stop(); environmentTimer.Start(); }); };
         Loaded += (_, _) => { popup.Owner = this; PositionDock(); hook = Native.SetWinEventHook(3, 3, 0, foregroundCallback, 0, 0, 2); locationHook = Native.SetWinEventHook(0x800B, 0x800B, 0, foregroundCallback, 0, 0, 2); source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle); source?.AddHook(WindowMessage); RegisterShortcut(); };
@@ -99,8 +109,9 @@ internal sealed class DockWindow : GlassWindow
         ctx.Desktop.Changed += DesktopChanged;
         discoveryTimer.Tick += async (_, _) => { discoveryTimer.Stop(); await RefreshDiscoveries(); };
         Closing += (_, _) => { if (!ctx.Closing) { ctx.Closing = true; Dispatcher.BeginInvoke(() => Application.Current.Shutdown()); } };
-        Closed += (_, _) => { disposed = true; openTimer.Stop(); closeTimer.Stop(); environmentTimer.Stop(); discoveryTimer.Stop(); popupMotion.Stop(); selectionShift.BeginAnimation(TranslateTransform.XProperty, null); Native.UnhookWinEvent(hook); Native.UnhookWinEvent(locationHook); if (source is not null) { Native.UnregisterHotKey(source.Handle, 1); source.RemoveHook(WindowMessage); } SystemEvents.DisplaySettingsChanged -= DisplayChanged; SystemEvents.PowerModeChanged -= PowerChanged; ctx.Db.Changed -= DataChanged; ctx.Desktop.Changed -= DesktopChanged; popup.Close(); };
+        Closed += (_, _) => { disposed = true; openTimer.Stop(); closeTimer.Stop(); environmentTimer.Stop(); discoveryTimer.Stop(); popupMotion.Stop(); selectionShift.BeginAnimation(TranslateTransform.XProperty, null); Native.UnhookWinEvent(hook); Native.UnhookWinEvent(locationHook); if (source is not null) { Native.UnregisterHotKey(source.Handle, 1); Native.UnregisterHotKey(source.Handle, 2); source.RemoveHook(WindowMessage); } SystemEvents.DisplaySettingsChanged -= DisplayChanged; SystemEvents.PowerModeChanged -= PowerChanged; ctx.Db.Changed -= DataChanged; ctx.Desktop.Changed -= DesktopChanged; popup.Close(); };
         Render();
+        SetCollapsed(true);
         discoveryTimer.Start();
     }
     private void DataChanged(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
@@ -160,7 +171,7 @@ internal sealed class DockWindow : GlassWindow
             Dispatcher.BeginInvoke(() => { HidePopup(); PositionDock(); });
         if (msg == 0x312)
         {
-            ctx.QuickTask();
+            if (w == 2) ToggleSummon(); else ctx.QuickTask();
             handled = true;
         }
         return 0;
@@ -172,6 +183,8 @@ internal sealed class DockWindow : GlassWindow
         Native.UnregisterHotKey(source.Handle, 1);
         var key = ctx.Db.Current.Preferences.QuickShortcut;
         ShortcutStatus = key.Length == 0 ? "已关闭" : Native.RegisterHotKey(source.Handle, 1, 0x4000 | 0x1 | 0x2, (uint)key[0]) ? $"Ctrl+Alt+{key} 已启用" : "快捷键被占用，可使用日历中的速记按钮。";
+        Native.UnregisterHotKey(source.Handle, 2);
+        SummonStatus = Native.RegisterHotKey(source.Handle, 2, 0x1, 0xC0) ? "Alt+` 唤起 Dock" : "Alt+` 被其他程序占用";
     }
     private void Render()
     {
@@ -359,7 +372,7 @@ internal sealed class DockWindow : GlassWindow
             Point start = default;
             b.PreviewMouseLeftButtonDown += (_, e) => { start = e.GetPosition(b); dragged = false; };
             b.PreviewMouseMove += (_, e) => { if (e.LeftButton != MouseButtonState.Pressed || dragged || (e.GetPosition(b) - start).Length < 8) return; dragged = true; var hold = hover.Hold(HoldReason.Dragging); try { DragDrop.DoDragDrop(b, new DataObject("GlassBogo.Entry", entry.Id), DragDropEffects.Move); } finally { hold.Dispose(); ScheduleClose(); } };
-            b.Click += async (_, _) => { if (dragged) return; HidePopup(); await ctx.Open(entry); };
+            b.Click += async (_, _) => { if (dragged) return; HidePopup(); SetCollapsed(true); await ctx.Open(entry); };
             b.Drop += (_, e) => { if (e.Data.GetData("GlassBogo.Entry") is string id) { e.Handled = true; Design.Guard(() => ctx.Catalog.Reorder(id, entry.Id)); } };
             var menu = new ContextMenu();
             AddMenu(menu, "重新定位目标…", () => { HidePopup(); ctx.LocateEntries([entry]); });
@@ -552,16 +565,46 @@ internal sealed class DockWindow : GlassWindow
     private void SetCollapsed(bool value)
     {
         collapsed = value;
-        Height = value ? 20 : 90;
-        strip.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+        if (bodyPanel is not null)
+            bodyPanel.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+        line.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        SetInsets(value ? 0 : 8);
+        SetSurfaceHidden(value);
+        if (value)
+            HidePopup();
         PositionDock();
+    }
+    private void ToggleSummon()
+    {
+        if (collapsed)
+        {
+            SetCollapsed(false);
+            Activate();
+        }
+        else
+        {
+            HidePopup();
+            SetCollapsed(true);
+        }
     }
     private Display Screen() => Display.AllScreens.FirstOrDefault(s => s.DeviceName == ctx.Db.Current.Preferences.Monitor) ?? Display.PrimaryScreen!;
     private void PositionDock()
     {
         var screen = Screen();
         var scale = screen.Scale;
-        var placement = SurfacePlacement.Dock(screen.WorkingArea, scale, ctx.Db.Current.Categories.Count, collapsed);
+        var work = screen.WorkingArea;
+        PixelRect placement;
+        if (collapsed)
+        {
+            // 收起态只是一条 60×6 的细线：窗口保留 240×20 作为悬停热区，材质隐藏。
+            var width = (int)Math.Round(240 * scale);
+            var height = (int)Math.Round(20 * scale);
+            var left = work.Left + (work.Width - width) / 2;
+            var top = Math.Max(work.Top, work.Bottom - height - (int)Math.Round(10 * scale));
+            placement = new(left, top, left + width, top + height);
+        }
+        else
+            placement = SurfacePlacement.Dock(work, scale, ctx.Db.Current.Categories.Count, false);
         Width = placement.Width / scale;
         Height = placement.Height / scale;
         Left = placement.Left / scale;

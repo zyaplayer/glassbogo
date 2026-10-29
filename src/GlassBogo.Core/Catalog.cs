@@ -42,6 +42,18 @@ public sealed class Catalog(Database db) : IEntryCatalog
         db.Update(s => s.Entries.RemoveAll(e => selected.Contains(e.Id)));
     }
     public IEnumerable<Entry> Search(string query) => db.Current.Entries.Where(e => e.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) || e.Target.Contains(query, StringComparison.CurrentCultureIgnoreCase));
+    public IEnumerable<Entry> Pinned() => db.Current.Entries.Where(e => e.Pinned).OrderBy(e => e.PinOrder).ThenBy(e => e.Name, StringComparer.CurrentCulture);
+    public void SetPinned(IEnumerable<string> ids, bool pinned)
+    {
+        var selected = ids.ToHashSet();
+        db.Update(s =>
+        {
+            var next = s.Entries.Where(e => e.Pinned).Select(e => e.PinOrder).DefaultIfEmpty(0).Max() + 1;
+            for (var i = 0; i < s.Entries.Count; i++)
+                if (selected.Contains(s.Entries[i].Id))
+                    s.Entries[i] = s.Entries[i] with { Pinned = pinned, PinOrder = pinned ? next++ : 0 };
+        });
+    }
     public void SaveCategory(string? id, string name)
     {
         name = name.Trim();
