@@ -119,6 +119,10 @@ internal sealed class AppContext : IDisposable
     }
     internal Launcher Launch { get; } = new();
     internal IconCache Icons { get; } = new();
+    internal DesktopHarvest Harvest
+    {
+        get;
+    }
     internal Plugins Plugins
     {
         get;
@@ -147,6 +151,7 @@ internal sealed class AppContext : IDisposable
     internal AppContext(string path)
     {
         Db = new(path);
+        Harvest = new(path);
         Catalog = new(Db);
         Calendar = new(Db);
         try

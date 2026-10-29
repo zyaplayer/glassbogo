@@ -100,6 +100,21 @@ internal sealed class WindowsDesktop : IDesktopIntegration
             return (IReadOnlyList<Entry>)entries;
         });
     }
+    public IReadOnlyList<string> ItemPaths()
+    {
+        var items = new List<string>();
+        foreach (var folder in Folders)
+        {
+            try
+            {
+                foreach (var path in Directory.EnumerateFileSystemEntries(folder))
+                    if (!Path.GetFileName(path).Equals("desktop.ini", StringComparison.OrdinalIgnoreCase))
+                        items.Add(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return items;
+    }
     public void HideIcons()
     {
         var hwnd = Native.DesktopList();

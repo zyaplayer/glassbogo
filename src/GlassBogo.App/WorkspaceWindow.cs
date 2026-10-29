@@ -166,6 +166,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         description.Margin = new(0, 0, 0, 20);
         panel.Children.Add(description);
         var shortcuts = new WrapPanel { Margin = new(-4, 0, 0, 14) };
+        shortcuts.Children.Add(Design.Button("收纳桌面", () => HarvestFlow.Start(this, ctx)));
         shortcuts.Children.Add(Design.Button("整理桌面入口", DiscoverDesktop));
         shortcuts.Children.Add(Design.AsyncButton("添加应用", () => PickApps()));
         shortcuts.Children.Add(Design.Button("快速记一件事", () => CalendarWindow.EditTask(ctx, this, null, true)));
@@ -384,6 +385,7 @@ internal sealed class WorkspaceWindow : GlassWindow
     {
         var p = new StackPanel();
         p.Children.Add(Design.Text("设置", 24));
+        HarvestSection(p);
         var theme = new ComboBox { ItemsSource = new[] { new Choice("system", "跟随系统"), new Choice("light", "浅色"), new Choice("dark", "深色") }, DisplayMemberPath = "Label", SelectedValuePath = "Value", SelectedValue = ctx.Db.Current.Preferences.Theme, Width = 170, Margin = new(5) };
         theme.SelectionChanged += (_, _) => Design.Guard(() => { var value = (string)theme.SelectedValue; ctx.Db.Update(s => s.Preferences = s.Preferences with { Theme = value }); Design.Apply(value); });
         p.Children.Add(Design.Row(Design.Text("外观主题"), theme));
@@ -411,6 +413,46 @@ internal sealed class WorkspaceWindow : GlassWindow
         p.Children.Add(Design.Button("打开数据目录", () => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ctx.Db.DirectoryPath) { UseShellExecute = true })));
         p.Children.Add(Design.Card(Design.Text("GlassBogo 0.1.1\n为轻盈的桌面与专注的工作而设计。\n独立实现；原文件始终保留原位。\n第三方：.NET / WPF（MIT），Microsoft.Data.Sqlite（MIT），SQLitePCLRaw（Apache-2.0），SQLite（Public Domain）。\n完整声明见程序目录 THIRD-PARTY-NOTICES.txt。", 13, "Muted")));
         content.Content = new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+    private void HarvestSection(StackPanel p)
+    {
+        var latest = ctx.Harvest.Latest();
+        var card = new StackPanel();
+        var title = Design.Text("桌面收纳", 18);
+        title.FontWeight = FontWeights.SemiBold;
+        card.Children.Add(title);
+        card.Children.Add(Design.Text(latest is null
+            ? "把桌面上的快捷方式、文件夹和文档搬进「桌面归档」，按日期分文件夹。只移动，不删除；同名自动加序号；撤销和收纳同批提供。"
+            : $"上次收纳：{latest.CreatedAt} · 已移动 {latest.MovedCount} 项 → {latest.ArchiveRoot}", 13, "Muted"));
+        var buttons = Design.Row(Design.Button("收纳桌面", () => HarvestFlow.Start(this, ctx)));
+        if (latest is not null)
+            buttons.Children.Add(Design.Button($"撤销上次收纳（{latest.MovedCount} 项）", () => UndoHarvest(latest)));
+        buttons.Children.Add(Design.Button("打开归档夹", () =>
+        {
+            var folder = latest is { ArchiveRoot.Length: > 0 } batch && Directory.Exists(batch.ArchiveRoot)
+                ? batch.ArchiveRoot
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "桌面归档");
+            if (!Directory.Exists(folder))
+                throw new InvalidOperationException("还没有归档夹，先收纳一次。");
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder) { UseShellExecute = true });
+        }));
+        card.Children.Add(buttons);
+        p.Children.Add(Design.Card(card));
+    }
+    private void UndoHarvest(HarvestBatch batch)
+    {
+        if (MessageBox.Show($"把 {batch.MovedCount} 项从归档夹搬回原位？\n原位置已被占用的项目会继续留在归档夹。", "撤销收纳", MessageBoxButton.YesNo) != MessageBoxResult.Yes)
+            return;
+        HarvestUndoResult result;
+        try { result = ctx.Harvest.Undo(batch); }
+        catch (Exception ex) { Design.Error(ex); return; }
+        var stale = ctx.Db.Current.Entries
+            .Where(e => e.Target.StartsWith(batch.ArchiveRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && !File.Exists(e.Target) && !Directory.Exists(e.Target))
+            .Select(e => e.Id).ToArray();
+        if (stale.Length > 0)
+            ctx.Catalog.Remove(stale);
+        MessageBox.Show(this, $"已恢复 {result.Restored} 项；原位置被占用 {result.Occupied} 项；归档中已缺失 {result.Missing} 项。\n\n需要显示桌面图标：取消上方「隐藏 Windows 桌面图标」。", "撤销收纳");
+        SettingsPage();
     }
     private void PluginPage()
     {
