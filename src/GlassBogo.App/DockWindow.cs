@@ -344,6 +344,7 @@ internal sealed class DockWindow : GlassWindow
         {
             var content = new StackPanel();
             var image = new Image { Width = 44, Height = 44, Margin = new(0, 0, 0, 8) };
+            RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
             _ = SetIcon(image, entry);
             content.Children.Add(image);
             var label = Design.Text(entry.Name, 12);

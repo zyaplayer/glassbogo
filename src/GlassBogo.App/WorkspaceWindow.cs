@@ -21,11 +21,17 @@ internal sealed class EntryRow : INotifyPropertyChanged
         get; private set;
     }
     private bool loaded;
-    internal EntryRow(Entry entry, string category)
+    internal EntryRow(Entry entry, string category, Action<Entry> open, Action<Entry> classify, Action<Entry> remove)
     {
         Entry = entry;
         Hint = category + "  ·  " + entry.Target;
+        OpenCommand = new Relay(() => open(entry));
+        ClassifyCommand = new Relay(() => classify(entry));
+        RemoveCommand = new Relay(() => remove(entry));
     }
+    public ICommand OpenCommand { get; }
+    public ICommand ClassifyCommand { get; }
+    public ICommand RemoveCommand { get; }
     public event PropertyChangedEventHandler? PropertyChanged;
     internal async Task Load(AppContext ctx)
     {
@@ -42,6 +48,13 @@ internal sealed class EntryRow : INotifyPropertyChanged
         catch { Hint = "⚠ 暂无法读取 · " + Hint; PropertyChanged?.Invoke(this, new(null)); }
     }
 }
+internal sealed class Relay(Action action) : ICommand
+{
+    public event EventHandler? CanExecuteChanged { add { } remove { } }
+    public bool CanExecute(object? parameter) => true;
+    public void Execute(object? parameter) => action();
+}
+
 internal sealed class WorkspaceWindow : GlassWindow
 {
     private readonly AppContext ctx;
@@ -83,15 +96,34 @@ internal sealed class WorkspaceWindow : GlassWindow
         search.TextChanged += (_, _) => RefreshEntries();
         filter.SelectionChanged += (_, _) => RefreshEntries();
         var template = new DataTemplate(typeof(EntryRow));
-        var row = new FrameworkElementFactory(typeof(StackPanel));
-        row.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+        var row = new FrameworkElementFactory(typeof(DockPanel));
+        row.SetValue(DockPanel.LastChildFillProperty, true);
         var icon = new FrameworkElementFactory(typeof(Image));
         icon.SetValue(Image.WidthProperty, 28d);
         icon.SetValue(Image.HeightProperty, 28d);
         icon.SetValue(Image.MarginProperty, new Thickness(0, 0, 12, 0));
+        icon.SetValue(DockPanel.DockProperty, Dock.Left);
         icon.SetBinding(Image.SourceProperty, new Binding("Icon"));
+        icon.SetValue(RenderOptions.BitmapScalingModeProperty, BitmapScalingMode.HighQuality);
         row.AppendChild(icon);
+        var actions = new FrameworkElementFactory(typeof(StackPanel));
+        actions.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+        actions.SetValue(DockPanel.DockProperty, Dock.Right);
+        actions.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        foreach (var (label, command, tip) in new[] { ("打开", "OpenCommand", "打开这个入口"), ("归类", "ClassifyCommand", "移动到其他分类"), ("移除", "RemoveCommand", "只移除引用，不删除磁盘文件") })
+        {
+            var action = new FrameworkElementFactory(typeof(Button));
+            action.SetValue(ContentControl.ContentProperty, label);
+            action.SetValue(Control.FontSizeProperty, 11d);
+            action.SetValue(FrameworkElement.MarginProperty, new Thickness(6, 0, 0, 0));
+            action.SetValue(Control.PaddingProperty, new Thickness(9, 3, 9, 3));
+            action.SetValue(FrameworkElement.ToolTipProperty, tip);
+            action.SetBinding(Button.CommandProperty, new Binding(command));
+            actions.AppendChild(action);
+        }
+        row.AppendChild(actions);
         var text = new FrameworkElementFactory(typeof(StackPanel));
+        text.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
         var name = new FrameworkElementFactory(typeof(TextBlock));
         name.SetBinding(TextBlock.TextProperty, new Binding("Name"));
         name.SetValue(TextBlock.FontSizeProperty, 14d);
@@ -217,18 +249,47 @@ internal sealed class WorkspaceWindow : GlassWindow
         entryPage = panel;
         var top = new StackPanel();
         top.Children.Add(Design.Text("全部入口", 24));
-        top.Children.Add(Design.Text("搜索入口名称或目标", 12, "Muted"));
+        top.Children.Add(Design.Text("搜索、归类、移除入口。移除入口只删引用，不动磁盘文件。", 12, "Muted"));
         top.Children.Add(search);
         filter.ItemsSource = new[] { new Category("", "全部分类") }.Concat(ctx.Db.Current.Categories).ToArray();
         filter.SelectedIndex = 0;
-        top.Children.Add(Design.Row(filter, Design.Button("桌面导入", DiscoverDesktop), Design.AsyncButton("选择应用", () => PickApps()), Design.AsyncButton("选择文件", PickFiles), Design.Button("选择文件夹", PickFolder)));
-        top.Children.Add(Design.Row(Design.Button("全选", entries.SelectAll), Design.Button("调整分类", MoveSelected), Design.Button("移除入口", () => { var ids = SelectedIds(); if (ids.Length > 0) ctx.Catalog.Remove(ids); }), Design.AsyncButton("打开", async () => { if (entries.SelectedItem is EntryRow e) await ctx.Open(e.Entry); }), Design.Button("重新定位", Relocate)));
-        top.Children.Add(status);
+        top.Children.Add(Design.Row(filter, AddButton()));
         DockPanel.SetDock(top, Dock.Top);
         panel.Children.Add(top);
+        var bottom = new StackPanel { Margin = new(0, 10, 0, 0) };
+        bottom.Children.Add(Design.Row(
+            Design.Button("全选", entries.SelectAll),
+            Design.AsyncButton("打开选中", async () => { if (entries.SelectedItem is EntryRow row) await ctx.Open(row.Entry); }),
+            Design.Button("批量归类", MoveSelected),
+            Design.Button("批量移除", () => Remove(SelectedIds())),
+            Design.Button("重新定位", Relocate)));
+        bottom.Children.Add(status);
+        DockPanel.SetDock(bottom, Dock.Bottom);
+        panel.Children.Add(bottom);
         panel.Children.Add(entries);
         content.Content = panel;
         RefreshEntries();
+    }
+    private Button AddButton()
+    {
+        var menu = new ContextMenu();
+        foreach (var (label, action) in new (string, Action)[]
+        {
+            ("收纳桌面到归档夹…", () => HarvestFlow.Start(this, ctx)),
+            ("从桌面收录入口", DiscoverDesktop),
+            ("添加已安装应用", () => _ = PickApps()),
+            ("添加文件", () => _ = PickFiles()),
+            ("添加文件夹", PickFolder)
+        })
+        {
+            var item = new MenuItem { Header = label };
+            item.Click += (_, _) => action();
+            menu.Items.Add(item);
+        }
+        var button = Design.Button("＋ 添加", () => { });
+        button.ContextMenu = menu;
+        button.Click += (_, _) => { menu.PlacementTarget = button; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true; };
+        return button;
     }
     private void RefreshCategoryFilter()
     {
@@ -258,21 +319,32 @@ internal sealed class WorkspaceWindow : GlassWindow
         if (page != "entries")
             return;
         var id = (string?)filter.SelectedValue;
-        var rows = ctx.Catalog.Search(search.Text.Trim()).Where(e => string.IsNullOrEmpty(id) || e.CategoryId == id).Select(e => new EntryRow(e, ctx.Db.Current.Categories.First(c => c.Id == e.CategoryId).Name)).ToArray();
+        var rows = ctx.Catalog.Search(search.Text.Trim()).Where(e => string.IsNullOrEmpty(id) || e.CategoryId == id).Select(e => new EntryRow(e, ctx.Db.Current.Categories.First(c => c.Id == e.CategoryId).Name, entry => _ = ctx.Open(entry), ClassifyOne, RemoveOne)).ToArray();
         entries.ItemsSource = rows;
         status.Text = $"{rows.Length} 个入口 · Ctrl / Shift 可多选；拖到下方分类调整归属。";
     }
-    private void MoveSelected()
+    private void MoveSelected() => Move(SelectedIds());
+    private void ClassifyOne(Entry entry) => Move([entry.Id]);
+    private void RemoveOne(Entry entry) => Remove([entry.Id]);
+    private void Remove(string[] ids)
     {
-        var ids = SelectedIds();
         if (ids.Length == 0)
+            return;
+        if (MessageBox.Show(this, $"移除 {ids.Length} 个入口？\n只移除列表里的引用，磁盘文件不会被删除。", "移除入口", MessageBoxButton.YesNo) != MessageBoxResult.Yes)
+            return;
+        ctx.Catalog.Remove(ids);
+    }
+    private void Move(IEnumerable<string> ids)
+    {
+        var list = ids.ToArray();
+        if (list.Length == 0)
             return;
         var dialog = new GlassWindow { Owner = this, Width = 380, Height = 240, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var combo = new ComboBox { ItemsSource = ctx.Db.Current.Categories, DisplayMemberPath = "Name", SelectedValuePath = "Id", SelectedIndex = 0, Margin = new(5), Height = 34 };
         var body = new StackPanel();
         body.Children.Add(combo);
-        body.Children.Add(Design.Button("移动入口到此分类", () => { ctx.Catalog.Move(ids, (string)combo.SelectedValue); dialog.Close(); }));
-        dialog.SetPage("调整分类", body);
+        body.Children.Add(Design.Button("移动入口到此分类", () => { ctx.Catalog.Move(list, (string)combo.SelectedValue); dialog.Close(); }));
+        dialog.SetPage($"调整分类 · {list.Length} 项", body);
         dialog.ShowDialog();
     }
     private async Task PickFiles()

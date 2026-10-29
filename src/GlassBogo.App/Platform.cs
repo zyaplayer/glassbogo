@@ -36,15 +36,53 @@ internal static class Native
     {
         public nint Icon; public int Index; public uint Attributes; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string DisplayName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string TypeName;
     }
-    internal static ImageSource? GetIcon(string target)
+    [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItemImageFactory
+    {
+        void GetImage(IconSize size, int flags, out nint bitmap);
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IconSize
+    {
+        public int Width, Height;
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SHCreateItemFromParsingName(string path, nint bindContext, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory factory);
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(nint handle);
+    // 128px 覆盖 44 DIP 在 200% 缩放下的显示；SHGetFileInfo 的大图标只有 32px，放大必然模糊。
+    private const int IconPixels = 128;
+    internal static ImageSource? GetIcon(string target) => TryShellImage(target) ?? TryShellIcon(target);
+    private static ImageSource? TryShellImage(string target)
+    {
+        IShellItemImageFactory? factory = null;
+        nint bitmap = 0;
+        try
+        {
+            var iid = typeof(IShellItemImageFactory).GUID;
+            SHCreateItemFromParsingName(target, 0, ref iid, out factory);
+            factory.GetImage(new IconSize { Width = IconPixels, Height = IconPixels }, 0x4, out bitmap);
+            if (bitmap == 0)
+                return null;
+            var image = Imaging.CreateBitmapSourceFromHBitmap(bitmap, 0, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            image.Freeze();
+            return image;
+        }
+        catch (Exception error) when (error is COMException or FileNotFoundException or ArgumentException or NotSupportedException) { return null; }
+        finally
+        {
+            if (bitmap != 0) DeleteObject(bitmap);
+            if (factory is not null) Marshal.FinalReleaseComObject(factory);
+        }
+    }
+    private static ImageSource? TryShellIcon(string target)
     {
         var info = new ShellInfo();
-        SHGetFileInfo(target, 0, ref info, (uint)Marshal.SizeOf<ShellInfo>(), 0x100 | 0x1);
-        if (info.Icon == 0)
+        if (SHGetFileInfo(target, 0, ref info, (uint)Marshal.SizeOf<ShellInfo>(), 0x100 | 0x1) == 0 || info.Icon == 0)
             return null;
         try
         {
-            var image = Imaging.CreateBitmapSourceFromHIcon(info.Icon, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(32, 32));
+            var image = Imaging.CreateBitmapSourceFromHIcon(info.Icon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             image.Freeze();
             return image;
         }
