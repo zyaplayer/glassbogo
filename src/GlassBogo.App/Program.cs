@@ -9,6 +9,12 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Material research has no database, tray, desktop integration or production mutex.
+        if (args.Length > 0 && args[0] is "--glass-lab" or "--glass-lab-qa")
+        {
+            GlassLab.Run(args);
+            return;
+        }
         if (args.Length >= 2 && args[0] == "--qa")
         {
             SelfTest.Run(args[1], args.Length > 2 ? int.Parse(args[2]) : 10);

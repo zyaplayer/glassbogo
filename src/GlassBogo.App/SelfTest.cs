@@ -32,18 +32,20 @@ internal static class SelfTest
                     dock.QaVerifyIcons();
                     Log("dock loaded; preview icons verified");
                     var motionButton = Walk(dock).OfType<Button>().First();
-                    motionButton.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseEnterEvent });
+                    motionButton.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = Mouse.PreviewMouseDownEvent });
                     var motion = (TransformGroup)motionButton.RenderTransform;
-                    if (SystemParameters.ClientAreaAnimation && !motion.Children.Any(t => t.HasAnimatedProperties))
-                        throw new InvalidOperationException("悬浮动画未启动。");
+                    if (GlassEnvironment.Animate && !motion.Children.Any(t => t.HasAnimatedProperties))
+                        throw new InvalidOperationException("按压动画未启动。");
                     await Task.Delay(300);
                     if (motion.Children.Any(t => t.HasAnimatedProperties))
                         throw new InvalidOperationException("悬浮动画结束后时钟未释放。");
-                    motionButton.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseLeaveEvent });
+                    motionButton.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = Mouse.PreviewMouseUpEvent });
                     await Task.Delay(300);
                     if (motion.Children.OfType<TranslateTransform>().Single().Y != 0)
                         throw new InvalidOperationException("鼠标离开后位移未归零。");
                     Log("hover motion starts/stops and returns to rest; system animations=" + SystemParameters.ClientAreaAnimation);
+                    await dock.QaVerifyTransitions();
+                    Log("popup interruption, latest-category switching, HWND reuse and dock tokens verified; " + dock.BackdropStatus);
                     dock.QaVerifyNavigation();
                     ctx.LocateEntries([ctx.Db.Current.Entries[0]]);
                     await Task.Delay(300);
@@ -72,6 +74,36 @@ internal static class SelfTest
                     await Task.Delay(500);
                     var popup = Application.Current.Windows.Cast<Window>().First(w => w.Title == "GlassBogo 分类");
                     Snapshot(popup, Path.Combine(output, "category.png"));
+                    Snapshot(dock, Path.Combine(output, "dock-selected.png"));
+                    dock.QaCompactPopup();
+                    Snapshot(popup, Path.Combine(output, "category-compact.png"));
+                    dock.QaHide();
+                    dock.QaCycle(2);
+                    await Task.Delay(180);
+                    Log("compact viewport scroll access and cross-fade keyboard exclusion verified");
+                    Log($"DPI dock={VisualTreeHelper.GetDpi(dock).DpiScaleX * 96:F0}; popup={VisualTreeHelper.GetDpi(popup).DpiScaleX * 96:F0}; assemblySHA256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(typeof(SelfTest).Assembly.Location)))}");
+                    Design.Apply("dark");
+                    Snapshot(dock, Path.Combine(output, "dock-dark.png"));
+                    Snapshot(popup, Path.Combine(output, "category-dark.png"));
+                    foreach (var contrast in new[] { false, true })
+                    {
+                        // Simulated app policy only; never mutate global Windows accessibility settings.
+                        using (GlassEnvironment.QaOverride(contrast, false, false))
+                        {
+                            Design.Apply("light");
+                            dock.QaHide();
+                            dock.QaCycle(2);
+                            var surface = ((GlassWindow)popup).MaterialBrush as SolidColorBrush;
+                            if (surface?.Color.A != 255 || ((GlassWindow)popup).SurfaceRoot.HasAnimatedProperties)
+                                throw new InvalidOperationException("禁用透明/高对比策略没有使用实色和即时状态。");
+                            Snapshot(popup, Path.Combine(output, contrast ? "category-contrast-policy.png" : "category-fallback.png"));
+                            Log("simulated contrast=" + contrast + "; " + ((GlassWindow)popup).BackdropStatus);
+                        }
+                    }
+                    Design.Apply("light");
+                    if (GlassEnvironment.Transparency && !ReferenceEquals(((GlassWindow)popup).MaterialBrush, Application.Current.Resources["SurfaceTint"]))
+                        throw new InvalidOperationException("回退后没有恢复动态玻璃色层资源。");
+                    Log("fallback/contrast-policy/reduced-motion and material restoration verified (not global OS settings)");
                     dock.QaHide();
                     var workspace = new WorkspaceWindow(ctx);
                     var pluginPath = Environment.GetEnvironmentVariable("GLASSBOGO_QA_PLUGIN");

@@ -2,6 +2,7 @@ using GlassBogo.Core;
 using GlassBogo.PluginSdk;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
+using GlassBogo.App;
 
 var root = Path.Combine(Path.GetTempPath(), "GlassBogo-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -40,5 +41,34 @@ Test("损坏数据库从备份恢复", () => { var dir = Path.Combine(root, "rec
 Test("首次日历导入保留原分类颜色", () => { using var db = New(); var file = Path.Combine(root, "colors.json"); File.WriteAllText(file, JsonSerializer.Serialize(new { version = 1, tasks = new[] { new CalendarTask("1", "旧任务", "2026-10-28", CategoryId: "work") }, categories = new[] { new TaskCategory("work", "工作", "#123456") } }, DataJson.Options)); Migration.Calendar(db, file); Check(db.Current.TaskCategories.Single(c => c.Id == "work").Color == "#123456"); new CalendarService(db).SaveCategory(new("work", "工作", "#654321")); Migration.Calendar(db, file); Check(db.Current.TaskCategories.Single(c => c.Id == "work").Color == "#654321"); });
 Test("500入口及10000任务规模", () => { using var db = New(); db.Update(s => { for (int i = 0; i < 500; i++) s.Entries.Add(Item("App " + i, "C:\\apps\\" + i + ".exe")); for (int i = 0; i < 10000; i++) s.Tasks.Add(new(i.ToString(), "Task " + i, new DateOnly(2026, 1, 1).AddDays(i % 365).ToString("yyyy-MM-dd"))); }); Check(new Catalog(db).Search("App").Count() == 500); Check(new CalendarService(db).Query(query: "Task 9999").Count() == 1); var watch = System.Diagnostics.Stopwatch.StartNew(); db.Update(s => s.Preferences = s.Preferences with { Theme = "dark" }); Console.WriteLine("  large-state edit ms=" + watch.ElapsedMilliseconds); });
 Test("日历服务契约导入导出及同项拖放", () => { using var source = New(); ICalendarService calendar = new CalendarService(source); calendar.SaveCategory(new("course", "课程", "#123456")); calendar.Save(new("roundtrip", "复习", "2026-10-28", CategoryId: "course", Notes: "保留备注", Order: 4)); calendar.Reorder("roundtrip", "roundtrip"); var path = Path.Combine(root, "calendar-contract.json"); calendar.Export(path); using var destination = New(); ICalendarService imported = new CalendarService(destination); imported.Import(path); Check(imported.Query().Single() == calendar.Query().Single()); Check(destination.Current.TaskCategories.Single(c => c.Id == "course").Color == "#123456"); });
+Test("悬浮离开取消待开启", () => { var h = new HoverCoordinator(); Check(h.Enter("a") == 100); h.Leave("a"); Check(h.Pending is null && h.Phase == HoverPhase.Closed); });
+Test("快速经过五类只保留最新请求", () => { var h = new HoverCoordinator(); h.Open("a"); foreach (var id in new[] { "b", "c", "d", "e", "f" }) Check(h.Enter(id) == 35); h.Leave("b"); Check(h.Pending == "f" && h.Selected == "a"); Check(h.Open("f")); Check(!h.Open("f")); });
+Test("窄通道保护且不覆盖桌面", () => { Check(HoverCoordinator.InCorridor(140, 204, 100, 180, 208, 0, 472, 200, 12)); Check(!HoverCoordinator.InCorridor(800, 204, 100, 180, 208, 0, 472, 200, 12)); Check(!HoverCoordinator.InCorridor(140, 100, 100, 180, 208, 0, 472, 200, 12)); var h = new HoverCoordinator(); h.Open("a"); Check(h.BeginClose(true) is null); Check(h.Selected == "a"); });
+Test("菜单嵌套保持和释放", () => { var h = new HoverCoordinator(); h.Open("a"); using (h.Hold(HoldReason.ContextMenu)) { using (h.Hold(HoldReason.ContextMenu)) Check(h.BeginClose(false) is null); Check(h.IsHeld); } Check(!h.IsHeld && h.BeginClose(false) is not null); });
+Test("拖拽失败也释放保持锁", () => { var h = new HoverCoordinator(); h.Open("a"); try { using var hold = h.Hold(HoldReason.Dragging); Check(h.Enter("b", true) == 350); throw new IOException("cancel"); } catch (IOException) { } Check(!h.IsHeld); Check(h.BeginClose(false) is not null); });
+Test("关闭中重开使旧回调失效", () => { var h = new HoverCoordinator(); h.Open("a"); var generation = h.BeginClose(false)!.Value; h.CancelClose(); h.Open("a"); Check(!h.CompleteClose(generation)); Check(h.Selected == "a"); var second = h.BeginClose(false)!.Value; Check(h.CompleteClose(second) && h.Selected is null); });
+Test("键盘焦点和 Esc 清理延迟请求", () => { var h = new HoverCoordinator(); h.Open("a"); h.SetHold(HoldReason.KeyboardFocus, true); Check(h.BeginClose(false) is null); h.Enter("b"); var old = h.Generation; h.Reset(); h.Opened(old); Check(h.Phase == HoverPhase.Closed && h.Pending is null); h.SetHold(HoldReason.KeyboardFocus, false); Check(!h.IsHeld); });
+Test("旧动画结束不覆盖新分类状态", () => { var h = new HoverCoordinator(); h.Open("a"); var old = h.Generation; h.Open("b"); h.Opened(old); Check(h.Phase == HoverPhase.Opening); h.Opened(h.Generation); Check(h.Phase == HoverPhase.Open && h.Selected == "b"); });
+Test("100/125/150/200% 与负坐标副屏定位", () =>
+{
+    foreach (var scale in new[] { 1d, 1.25, 1.5, 2 })
+    foreach (var work in new[] { new PixelRect(0, 0, 1920, 1040), new PixelRect(-1920, -300, 0, 740), new PixelRect(80, 0, 1920, 1080), new PixelRect(0, 80, 1920, 1080), new PixelRect(0, 0, 1840, 1080) })
+    {
+        var dock = SurfacePlacement.Dock(work, scale, 24, false);
+        Check(dock.Width <= work.Width * .7 && dock.Left >= work.Left && dock.Right <= work.Right);
+        Check(work.Bottom - dock.Bottom == Math.Round(12 * scale));
+        var popup = SurfacePlacement.Popup(work, scale, dock);
+        Check(popup.Left >= work.Left && popup.Right <= work.Right && popup.Top >= work.Top && popup.Bottom <= work.Bottom);
+        if (dock.Top - popup.Height - Math.Round(8 * scale) >= work.Top) Check(dock.Top - popup.Bottom == Math.Round(8 * scale));
+    }
+});
+Test("高缩放小工作区浮层不越界", () =>
+{
+    var work = new PixelRect(-800, -100, 0, 580);
+    var dock = SurfacePlacement.Dock(work, 2, 10, false);
+    var popup = SurfacePlacement.Popup(work, 2, dock);
+    Check(popup == work);
+    Check(SurfacePlacement.Dock(work, 2, 10, true).Height == 40);
+});
 Console.WriteLine($"RESULT passed={passed} failed={failed}; isolated data={root}");
 Environment.ExitCode = failed == 0 ? 0 : 1;

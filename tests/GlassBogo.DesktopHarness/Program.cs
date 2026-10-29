@@ -1,13 +1,14 @@
 using System.Runtime.InteropServices;
 using System.Text;
-if (args.Length < 2) throw new ArgumentException("Usage: DesktopHarness app.exe output-directory [stress-seconds]");
+if (args.Length < 2) throw new ArgumentException("Usage: DesktopHarness app.exe output-directory [stress-seconds] [--glass-lab-qa]");
+var mode = args.Length > 3 && args[3] == "--glass-lab-qa" ? "--glass-lab-qa" : "--qa";
 var name = "GlassBogo-QA-" + Guid.NewGuid().ToString("N");
 var desktop = Win.CreateDesktop(name, 0, 0, 0, 0x1FF, 0);
 if (desktop == 0) throw new System.ComponentModel.Win32Exception();
 try
 {
     var startup = new Win.Startup { Size = Marshal.SizeOf<Win.Startup>(), Desktop = "WinSta0\\" + name };
-    var command = new StringBuilder($"\"{Path.GetFullPath(args[0])}\" --qa \"{Path.GetFullPath(args[1])}\" {(args.Length > 2 ? args[2] : "10")}");
+    var command = new StringBuilder($"\"{Path.GetFullPath(args[0])}\" {mode} \"{Path.GetFullPath(args[1])}\" {(args.Length > 2 ? args[2] : "10")}");
     if (!Win.CreateProcess(null, command, 0, 0, false, 0x08000000, 0, Path.GetDirectoryName(Path.GetFullPath(args[0])), ref startup, out var process))
         throw new System.ComponentModel.Win32Exception();
     Console.WriteLine($"Isolated desktop={name}; child PID={process.Id}");

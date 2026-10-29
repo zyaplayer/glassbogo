@@ -11,7 +11,6 @@ try {
     Copy-Item -LiteralPath THIRD-PARTY-NOTICES.txt -Destination artifacts/publish -Force
     Copy-Item -LiteralPath licenses -Destination artifacts/publish -Recurse -Force
     Copy-Item -LiteralPath README.md -Destination artifacts/publish -Force
-    Copy-Item -LiteralPath docs -Destination artifacts/publish -Recurse -Force
     Copy-Item -LiteralPath THIRD-PARTY-NOTICES.txt -Destination artifacts/sample-plugin -Force
     Copy-Item -LiteralPath licenses -Destination artifacts/sample-plugin -Recurse -Force
 } finally { Pop-Location }

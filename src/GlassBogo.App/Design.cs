@@ -12,30 +12,40 @@ internal static class Design
     private static bool stylesLoaded;
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Button, object> motionButtons = new();
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<System.Windows.Media.Animation.Animatable, Dictionary<DependencyProperty, int>> animationVersions = new();
-    private static Brush Brush(string value) => (Brush)new BrushConverter().ConvertFromInvariantString(value)!;
-    private static Brush Gradient(string top, string bottom) => new LinearGradientBrush((Color)ColorConverter.ConvertFromString(top), (Color)ColorConverter.ConvertFromString(bottom), 90);
+    private static Brush Brush(string value) { var brush = (Brush)new BrushConverter().ConvertFromInvariantString(value)!; brush.Freeze(); return brush; }
     internal static bool Dark
     {
         get; private set;
     }
     internal static void Apply(string theme)
     {
+        GlassEnvironment.Refresh();
         using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
         Dark = theme == "dark" || theme == "system" && (int)(key?.GetValue("AppsUseLightTheme") ?? 1) == 0;
         var r = Application.Current.Resources;
-        r["Ink"] = new SolidColorBrush(Dark ? Color.FromRgb(235, 240, 250) : Color.FromRgb(28, 40, 58));
-        r["Muted"] = new SolidColorBrush(Dark ? Color.FromRgb(164, 181, 205) : Color.FromRgb(85, 104, 125));
-        r["Card"] = Dark ? Gradient("#243F5974", "#1425364C") : Gradient("#90FFFFFF", "#30FFFFFF");
-        r["Surface"] = Dark ? Gradient("#B923364D", "#AC101E31") : Gradient("#88FFFFFF", "#50E5EEFA");
+        r["Ink"] = r["InkPrimary"] = Brush(Dark ? "#FFF3F7FE" : "#FF172333");
+        r["Muted"] = r["InkSecondary"] = Brush(Dark ? "#FFAFBED1" : "#FF566477");
+        r["Card"] = Brush(Dark ? "#183F5974" : "#38FFFFFF");
+        r["SurfaceTint"] = Brush(Dark ? "#300B1628" : "#18FFFFFF");
+        r["SurfaceFallback"] = Brush(Dark ? "#FF19283C" : "#FFF0F6FD");
+        r["Surface"] = r[GlassEnvironment.Transparency ? "SurfaceTint" : "SurfaceFallback"];
         r["ScrollThumb"] = Brush(Dark ? "#608BA3BF" : "#506580A0");
-        r["Line"] = Dark ? Gradient("#65C7DCFF", "#184B6380") : Gradient("#F2FFFFFF", "#63FFFFFF");
+        r["Line"] = r["SurfaceLine"] = Brush(Dark ? "#30EAF5FF" : "#65FFFFFF");
+        r["SpecularTop"] = Brush(Dark ? "#50FFFFFF" : "#A8FFFFFF");
+        r["FocusRing"] = Brush(Dark ? "#FF9DCBFF" : "#FF2779E6");
+        r["Warning"] = Brush(Dark ? "#FFF2B960" : "#FFD68C25");
         r["Inset"] = Brush(Dark ? "#36101C2D" : "#40FFFFFF");
         r["MenuSurface"] = Brush(Dark ? "#FF1F3046" : "#FFF4F8FE");
-        r["Selected"] = Dark ? Gradient("#684B88C8", "#32366594") : Gradient("#C9E0F0FF", "#80C6E0FB");
+        r["Selected"] = r["SelectedFill"] = Brush(Dark ? "#5070AEFF" : "#70CEE6FF");
         r["AccentLine"] = Brush(Dark ? "#909ECFFB" : "#85A4C8ED");
-        r["Accent"] = new SolidColorBrush(Dark ? Color.FromRgb(134, 190, 245) : Color.FromRgb(41, 102, 174));
-        r["Hover"] = Dark ? Gradient("#456991BA", "#125C83B0") : Gradient("#95FFFFFF", "#30D3E7FF");
-        if (SystemParameters.HighContrast)
+        r["Accent"] = Brush(Dark ? "#FF79B5FF" : "#FF468FF2");
+        r["Hover"] = r["HoverFill"] = Brush(Dark ? "#2679B5FF" : "#30E2F0FF");
+        r["DisabledInk"] = Brush(Dark ? "#FFAFBED1" : "#FF566477");
+        r["SelectedInk"] = r["Ink"];
+        r["ControlRadius"] = new CornerRadius(12);
+        r["CategoryRadius"] = new CornerRadius(16);
+        r["GlowVisibility"] = GlassEnvironment.Transparency ? Visibility.Visible : Visibility.Collapsed;
+        if (GlassEnvironment.HighContrast)
         {
             r["Ink"] = SystemColors.WindowTextBrush;
             r["Muted"] = SystemColors.WindowTextBrush;
@@ -48,6 +58,16 @@ internal static class Design
             r["Selected"] = SystemColors.HighlightBrush;
             r["AccentLine"] = SystemColors.WindowTextBrush;
             r["ScrollThumb"] = SystemColors.WindowTextBrush;
+            r["SurfaceFallback"] = r["SurfaceTint"] = SystemColors.WindowBrush;
+            r["FocusRing"] = r["Warning"] = SystemColors.WindowTextBrush;
+            r["SelectedInk"] = SystemColors.HighlightTextBrush;
+            r["DisabledInk"] = SystemColors.GrayTextBrush;
+            r["SpecularTop"] = Brushes.Transparent;
+            r["InkPrimary"] = r["Ink"];
+            r["InkSecondary"] = r["Muted"];
+            r["SurfaceLine"] = r["Line"];
+            r["SelectedFill"] = r["Selected"];
+            r["HoverFill"] = r["Hover"];
         }
         if (!stylesLoaded)
         {
@@ -94,14 +114,14 @@ internal static class Design
         System.Windows.Automation.AutomationProperties.SetName(button, tooltip);
         return button;
     }
-    private static void Animate(System.Windows.Media.Animation.Animatable target, DependencyProperty property, double value, double milliseconds = 180)
+    internal static void Animate(System.Windows.Media.Animation.Animatable target, DependencyProperty property, double value, double milliseconds = 180)
     {
         var from = (double)target.GetValue(property);
         target.SetValue(property, value);
         var versions = animationVersions.GetOrCreateValue(target);
         var version = versions.GetValueOrDefault(property) + 1;
         versions[property] = version;
-        if (!SystemParameters.ClientAreaAnimation) { target.BeginAnimation(property, null); return; }
+        if (!GlassEnvironment.Animate) { target.BeginAnimation(property, null); return; }
         var animation = new DoubleAnimation(from, value, TimeSpan.FromMilliseconds(milliseconds)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop };
         animation.Completed += (_, _) => { if (versions[property] == version) target.BeginAnimation(property, null); };
         target.BeginAnimation(property, animation);
@@ -123,11 +143,27 @@ internal static class Design
             Animate(scale, ScaleTransform.ScaleXProperty, size);
             Animate(scale, ScaleTransform.ScaleYProperty, size);
         }
-        button.MouseEnter += (_, _) => Move(-2, 1.015);
+        button.MouseEnter += (_, _) => Move(0, 1);
         button.MouseLeave += (_, _) => Move(0, 1);
-        button.PreviewMouseLeftButtonDown += (_, _) => Move(0, .965);
-        button.PreviewMouseLeftButtonUp += (_, _) => Move(button.IsMouseOver ? -2 : 0, button.IsMouseOver ? 1.015 : 1);
-        button.Unloaded += (_, _) => { shift.BeginAnimation(TranslateTransform.YProperty, null); scale.BeginAnimation(ScaleTransform.ScaleXProperty, null); scale.BeginAnimation(ScaleTransform.ScaleYProperty, null); shift.Y = 0; scale.ScaleX = scale.ScaleY = 1; };
+        button.PreviewMouseLeftButtonDown += (_, _) => { Animate(scale, ScaleTransform.ScaleXProperty, .97, 70); Animate(scale, ScaleTransform.ScaleYProperty, .97, 70); };
+        button.PreviewMouseLeftButtonUp += (_, _) => Move(0, 1);
+        button.LostMouseCapture += (_, _) => Move(0, 1);
+        // The glow moves at most 10 DIP, only on actual pointer events; no rendering loop.
+        long lastGlow = 0;
+        button.MouseMove += (_, e) =>
+        {
+            if (!GlassEnvironment.Animate || Environment.TickCount64 - lastGlow < 16) return;
+            lastGlow = Environment.TickCount64;
+            if (button.Template.FindName("Glow", button) is Border { Background: RadialGradientBrush brush } glow)
+            {
+                if (brush.IsFrozen) { brush = brush.Clone(); glow.Background = brush; }
+                var p = e.GetPosition(button);
+                var center = new Point(.5 + Math.Clamp(p.X - button.ActualWidth / 2, -10, 10) / Math.Max(1, button.ActualWidth),
+                    .5 + Math.Clamp(p.Y - button.ActualHeight / 2, -10, 10) / Math.Max(1, button.ActualHeight));
+                brush.Center = brush.GradientOrigin = center;
+            }
+        };
+        button.Unloaded += (_, _) => { shift.BeginAnimation(TranslateTransform.XProperty, null); shift.BeginAnimation(TranslateTransform.YProperty, null); scale.BeginAnimation(ScaleTransform.ScaleXProperty, null); scale.BeginAnimation(ScaleTransform.ScaleYProperty, null); shift.X = shift.Y = 0; scale.ScaleX = scale.ScaleY = 1; };
     }
     internal static Button Button(string text, Action action)
     {
@@ -184,22 +220,29 @@ internal static class Design
         window.Loaded += (_, _) => { input.Focus(); input.SelectAll(); };
         return window.ShowDialog() == true ? input.Text.Trim() : null;
     }
-    internal static void Reveal(FrameworkElement element)
+    internal static void Reveal(FrameworkElement element, double milliseconds = 200, double offset = 10)
     {
-        if (!SystemParameters.ClientAreaAnimation)
+        if (!GlassEnvironment.Animate)
             return;
         var transform = new TranslateTransform();
         element.RenderTransform = transform;
-        var fade = new DoubleAnimation(.35, 1, TimeSpan.FromMilliseconds(200)) { FillBehavior = FillBehavior.Stop };
+        var fade = new DoubleAnimation(.65, 1, TimeSpan.FromMilliseconds(milliseconds)) { FillBehavior = FillBehavior.Stop };
         fade.Completed += (_, _) => { if (ReferenceEquals(element.RenderTransform, transform)) element.BeginAnimation(UIElement.OpacityProperty, null); };
         element.BeginAnimation(UIElement.OpacityProperty, fade);
-        transform.Y = 10;
-        Animate(transform, TranslateTransform.YProperty, 0, 240);
+        transform.Y = offset;
+        Animate(transform, TranslateTransform.YProperty, 0, milliseconds);
     }
 }
 internal class GlassWindow : Window
 {
     private readonly Border frame;
+    private readonly Grid bodyHost = new();
+    private UIElement? currentBody;
+    private int bodyGeneration;
+    internal FrameworkElement SurfaceRoot { get; }
+    internal bool TransientMaterial { get; set; }
+    internal string BackdropStatus { get; private set; } = "not initialized";
+    internal Brush MaterialBrush => frame.Background;
     [StructLayout(LayoutKind.Sequential)]
     private struct Margins
     {
@@ -220,37 +263,90 @@ internal class GlassWindow : Window
         MinWidth = 220;
         MinHeight = 70;
         frame = new Border { CornerRadius = new(24), BorderThickness = new(1), Padding = new(22) };
+        frame.Child = bodyHost;
         frame.SetResourceReference(Border.BorderBrushProperty, "Line");
         frame.SetResourceReference(Border.BackgroundProperty, "Surface");
-        Content = frame;
+        var layers = new Grid();
+        layers.Children.Add(frame);
+        var highlight = new Border { Height = 1, Margin = new(28, 1, 28, 0), VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
+        highlight.SetResourceReference(Border.BackgroundProperty, "SpecularTop");
+        layers.Children.Add(highlight);
+        Content = SurfaceRoot = layers;
         SourceInitialized += (_, _) => UpdateBackdrop();
+        Closed += (_, _) => StopBodyTransition();
     }
-    internal void UpdateBackdrop()
+    internal virtual void UpdateBackdrop()
     {
+        if (!GlassEnvironment.Animate) StopBodyTransition();
         var handle = new WindowInteropHelper(this).Handle;
         if (handle == 0)
             return;
         var dark = Design.Dark ? 1 : 0;
-        Native.DwmSetWindowAttribute(handle, 20, ref dark, 4);
+        var themeResult = Native.DwmSetWindowAttribute(handle, 20, ref dark, 4);
         var corner = 2;
-        Native.DwmSetWindowAttribute(handle, 33, ref corner, 4);
+        var cornerResult = Native.DwmSetWindowAttribute(handle, 33, ref corner, 4);
         var noNativeBorder = unchecked((int)0xFFFFFFFE);
-        Native.DwmSetWindowAttribute(handle, 34, ref noNativeBorder, 4);
-        var backdrop = SystemParameters.HighContrast ? 1 : 3;
+        var borderResult = Native.DwmSetWindowAttribute(handle, 34, ref noNativeBorder, 4);
+        var backdrop = GlassEnvironment.Transparency ? (TransientMaterial ? 3 : 2) : 1;
         var result = Native.DwmSetWindowAttribute(handle, 38, ref backdrop, 4);
-        if (result == 0 && !SystemParameters.HighContrast)
+        var margins = GlassEnvironment.Transparency && result == 0 ? new Margins { Left = -1 } : new Margins();
+        var extendResult = DwmExtendFrameIntoClientArea(handle, ref margins);
+        var composed = result == 0 && extendResult == 0 && GlassEnvironment.Transparency;
+        if (composed)
         {
-            var margins = new Margins { Left = -1 };
-            DwmExtendFrameIntoClientArea(handle, ref margins);
+            frame.SetResourceReference(Border.BackgroundProperty, "SurfaceTint");
             if (HwndSource.FromHwnd(handle)?.CompositionTarget is { } target)
                 target.BackgroundColor = Colors.Transparent;
         }
         else
-            frame.Background = SystemParameters.HighContrast ? SystemColors.WindowBrush : new SolidColorBrush(Design.Dark ? Color.FromRgb(24, 32, 44) : Color.FromRgb(239, 245, 250));
+        {
+            var none = 1;
+            Native.DwmSetWindowAttribute(handle, 38, ref none, 4);
+            var resetMargins = new Margins();
+            DwmExtendFrameIntoClientArea(handle, ref resetMargins);
+            frame.SetResourceReference(Border.BackgroundProperty, "SurfaceFallback");
+            if (HwndSource.FromHwnd(handle)?.CompositionTarget is { } target)
+                target.BackgroundColor = ((SolidColorBrush)Application.Current.Resources["SurfaceFallback"]).Color;
+        }
+        BackdropStatus = $"requested={backdrop}; DWM=0x{result:X8}; extend=0x{extendResult:X8}; theme=0x{themeResult:X8}; corner=0x{cornerResult:X8}; border=0x{borderResult:X8}; composed-request={composed}; build={Environment.OSVersion.Version}";
     }
-    internal void SetBody(UIElement content) => frame.Child = content;
+    internal void StopBodyTransition()
+    {
+        bodyGeneration++;
+        foreach (UIElement child in bodyHost.Children)
+        {
+            child.BeginAnimation(UIElement.OpacityProperty, null);
+            child.Opacity = 1;
+            child.IsHitTestVisible = true;
+            child.IsEnabled = true;
+        }
+        for (var i = bodyHost.Children.Count - 1; i >= 0; i--)
+            if (!ReferenceEquals(bodyHost.Children[i], currentBody)) bodyHost.Children.RemoveAt(i);
+    }
+    internal void SetBody(UIElement content, bool crossFade = false)
+    {
+        if (ReferenceEquals(content, currentBody)) return;
+        var old = currentBody;
+        StopBodyTransition();
+        currentBody = content;
+        if (!crossFade || !GlassEnvironment.Animate || old is null)
+        {
+            bodyHost.Children.Clear();
+            bodyHost.Children.Add(content);
+            return;
+        }
+        var generation = bodyGeneration;
+        old.IsHitTestVisible = false;
+        old.IsEnabled = false;
+        bodyHost.Children.Add(content);
+        var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(90)) { FillBehavior = FillBehavior.Stop };
+        var fadeIn = new DoubleAnimation(0, 1, fadeOut.Duration) { FillBehavior = FillBehavior.Stop };
+        fadeIn.Completed += (_, _) => { if (generation == bodyGeneration) StopBodyTransition(); };
+        old.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+        content.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+    }
     internal void SetInsets(double padding) => frame.Padding = new(padding);
-    internal void RevealBody() { if (frame.Child is FrameworkElement body) Design.Reveal(body); }
+    internal void SetRadius(double radius) => frame.CornerRadius = new(radius);
     internal void SetPage(string title, UIElement content, bool close = true)
     {
         var layout = new DockPanel();
@@ -271,6 +367,6 @@ internal class GlassWindow : Window
         DockPanel.SetDock(header, Dock.Top);
         layout.Children.Add(header);
         layout.Children.Add(content);
-        frame.Child = layout;
+        SetBody(layout);
     }
 }

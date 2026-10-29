@@ -5,25 +5,26 @@
         <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
         <Setter Property="Background" Value="{DynamicResource Card}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
-        <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="Padding" Value="16,10"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="12,8"/>
         <Setter Property="Margin" Value="4"/>
         <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="MinWidth" Value="36"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template"><Setter.Value>
             <ControlTemplate TargetType="Button">
                 <Grid>
-                    <Border x:Name="Body" CornerRadius="14" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"/>
-                    <Border x:Name="HoverLayer" CornerRadius="14" Background="{DynamicResource Hover}" Opacity="0" IsHitTestVisible="False"/>
-                    <Border x:Name="FocusRing" CornerRadius="14" BorderBrush="{DynamicResource Accent}" BorderThickness="1.5" Opacity="0" IsHitTestVisible="False"/>
+                    <Border x:Name="Body" CornerRadius="{DynamicResource ControlRadius}" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"/>
+                    <Border x:Name="HoverLayer" CornerRadius="{DynamicResource ControlRadius}" Background="{DynamicResource Hover}" Opacity="0" IsHitTestVisible="False"/>
+                    <Border x:Name="FocusRing" CornerRadius="{DynamicResource ControlRadius}" BorderBrush="{DynamicResource FocusRing}" BorderThickness="1.5" Opacity="0" IsHitTestVisible="False"/>
                     <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="True"/>
                 </Grid>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="HoverLayer" Property="Opacity" Value="1"/></Trigger>
                     <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="FocusRing" Property="Opacity" Value="1"/></Trigger>
-                    <Trigger Property="Tag" Value="active"><Setter TargetName="Body" Property="Background" Value="{DynamicResource Selected}"/><Setter TargetName="Body" Property="BorderBrush" Value="{DynamicResource AccentLine}"/></Trigger>
-                    <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+                    <Trigger Property="Tag" Value="active"><Setter TargetName="Body" Property="Background" Value="{DynamicResource Selected}"/><Setter Property="Foreground" Value="{DynamicResource SelectedInk}"/></Trigger>
+                    <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource DisabledInk}"/><Setter Property="Cursor" Value="Arrow"/><Setter TargetName="HoverLayer" Property="Opacity" Value="0"/></Trigger>
                 </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter.Value></Setter>
@@ -31,6 +32,24 @@
     </Style>
     <Style x:Key="QuietButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
         <Setter Property="Background" Value="Transparent"/><Setter Property="BorderBrush" Value="Transparent"/>
+    </Style>
+    <!-- Dock selection is drawn once behind the whole strip. Tiles have no card border. -->
+    <Style x:Key="CategoryButton" TargetType="Button" BasedOn="{StaticResource QuietButton}">
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+            <Grid Background="Transparent">
+                <Border x:Name="Hover" CornerRadius="{DynamicResource CategoryRadius}" Background="{DynamicResource Hover}" Opacity="0" IsHitTestVisible="False"/>
+                <Border x:Name="Glow" CornerRadius="{DynamicResource CategoryRadius}" Opacity="0" Visibility="{DynamicResource GlowVisibility}" IsHitTestVisible="False">
+                    <Border.Background><RadialGradientBrush RadiusX="0.7" RadiusY="0.7"><GradientStop Color="#38FFFFFF" Offset="0"/><GradientStop Color="#00FFFFFF" Offset="1"/></RadialGradientBrush></Border.Background>
+                </Border>
+                <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Border x:Name="Focus" CornerRadius="{DynamicResource CategoryRadius}" BorderBrush="{DynamicResource FocusRing}" BorderThickness="1.5" Opacity="0" IsHitTestVisible="False"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Hover" Property="Opacity" Value="1"/><Setter TargetName="Glow" Property="Opacity" Value="1"/></Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Focus" Property="Opacity" Value="1"/></Trigger>
+                <Trigger Property="Tag" Value="active"><Setter Property="Foreground" Value="{DynamicResource SelectedInk}"/></Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
     <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource QuietButton}">
         <Setter Property="HorizontalContentAlignment" Value="Left"/><Setter Property="Padding" Value="14,13"/><Setter Property="Margin" Value="0,3"/>

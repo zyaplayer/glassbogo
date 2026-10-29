@@ -11,37 +11,57 @@ internal sealed class DockWindow : GlassWindow
     private State renderedState;
     private readonly StackPanel strip = new() { Orientation = Orientation.Horizontal };
     private readonly GlassWindow popup;
-    private readonly DispatcherTimer openTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
-    private readonly DispatcherTimer closeTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer openTimer = new();
+    private readonly DispatcherTimer closeTimer = new() { Interval = TimeSpan.FromMilliseconds(HoverCoordinator.CloseDelay) };
     private readonly DispatcherTimer environmentTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private readonly DispatcherTimer discoveryTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private sealed record PopupPage(UIElement Content, Button[] Entries);
     private readonly Dictionary<string, PopupPage> popupPages = new();
     private Button[] visibleEntries = [];
-    private int hideGeneration;
-    private Category? pending, active; private Button? anchor; private int page; private int holds;
+    private readonly HoverCoordinator hover = new();
+    private readonly GlassMotion popupMotion;
+    private readonly Border selection = new() { Width = 80, Height = 72, CornerRadius = new(16), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new(4, 0, 0, 0), IsHitTestVisible = false, Visibility = Visibility.Hidden };
+    private readonly TranslateTransform selectionShift = new();
+    private Category? pending, active; private Button? anchor; private int page;
     private Point dragStart; private string? dragCategory;
     private nint hook; private nint locationHook; private readonly Native.WinEventProc foregroundCallback;
     private HwndSource? source; private bool collapsed; private readonly Button discoveries;
+    private bool disposed;
     internal string ShortcutStatus { get; private set; } = "";
+    internal override void UpdateBackdrop()
+    {
+        base.UpdateBackdrop();
+        if (!GlassEnvironment.Animate)
+        {
+            if (popupMotion.IsClosing) HidePopup(); else popupMotion.Stop();
+            selectionShift.BeginAnimation(TranslateTransform.XProperty, null);
+        }
+    }
     internal DockWindow(AppContext context)
     {
         ctx = context;
         renderedState = context.Db.Current;
         Title = "GlassBogo";
-        Height = 118;
-        SetInsets(12);
+        Height = 90;
+        SetInsets(8);
+        TransientMaterial = true;
         MinHeight = 12;
         Topmost = true;
         ShowInTaskbar = false;
         ShowActivated = false;
         ResizeMode = ResizeMode.NoResize;
-        popup = new GlassWindow { Title = "GlassBogo 分类", Width = 472, Height = 396, Topmost = true, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize };
-        popup.MouseEnter += (_, _) => closeTimer.Stop();
-        popup.MouseLeave += (_, _) => ScheduleClose();
+        popup = new GlassWindow { Title = "GlassBogo 分类", Width = 472, Height = 396, MinWidth = 0, MinHeight = 0, Topmost = true, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize };
+        popup.TransientMaterial = true;
+        popup.SetRadius(22);
+        popup.SetInsets(16);
+        popupMotion = new GlassMotion(popup.SurfaceRoot);
+        popup.MouseEnter += (_, _) => { hover.SetHold(HoldReason.PointerInPopup, true); ResumePopup(); };
+        popup.MouseLeave += (_, _) => { hover.SetHold(HoldReason.PointerInPopup, false); ScheduleClose(); };
         popup.PreviewKeyDown += PopupKeyDown;
-        popup.PreviewMouseWheel += (_, e) => { if (e.Delta != 0) { ChangePage(e.Delta < 0 ? 1 : -1); e.Handled = true; } };
-        popup.LostKeyboardFocus += (_, _) => ScheduleClose();
+        popup.PreviewMouseWheel += (_, e) => { if (e.Delta != 0 && popup.Width >= 472 && popup.Height >= 396) { ChangePage(e.Delta < 0 ? 1 : -1); e.Handled = true; } };
+        popup.GotKeyboardFocus += (_, _) => { hover.SetHold(HoldReason.KeyboardFocus, true); ResumePopup(); };
+        popup.LostKeyboardFocus += (_, _) => Dispatcher.BeginInvoke(() => { hover.SetHold(HoldReason.KeyboardFocus, popup.IsKeyboardFocusWithin); ScheduleClose(); });
+        TrackExternalDrag(popup);
         discoveries = Design.IconButton("plus", "添加入口 / 新发现", () => ctx.OpenWorkspace(true));
         discoveries.ToolTip = "添加入口 / 新发现";
         var body = new DockPanel();
@@ -50,12 +70,26 @@ internal sealed class DockWindow : GlassWindow
         actions.Margin = new(12, 0, 0, 0);
         DockPanel.SetDock(actions, Dock.Right);
         body.Children.Add(actions);
-        body.Children.Add(new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        var categoryLayer = new Grid();
+        selection.SetResourceReference(Border.BackgroundProperty, "Selected");
+        selection.RenderTransform = selectionShift;
+        categoryLayer.Children.Add(selection);
+        categoryLayer.Children.Add(strip);
+        var scroller = new ScrollViewer { Content = categoryLayer, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        scroller.PreviewMouseWheel += (_, e) => { scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - e.Delta); e.Handled = true; };
+        body.Children.Add(scroller);
         SetBody(body);
-        openTimer.Tick += (_, _) => { openTimer.Stop(); if (pending is not null && anchor is not null) ShowCategory(pending, anchor); };
-        closeTimer.Tick += (_, _) => { closeTimer.Stop(); if (holds > 0 || popup.IsMouseOver || IsMouseOver || popup.IsKeyboardFocusWithin) return; HidePopup(true); if (ctx.Db.Current.Preferences.AutoHide) SetCollapsed(true); };
-        MouseEnter += (_, _) => { closeTimer.Stop(); if (collapsed) SetCollapsed(false); };
-        MouseLeave += (_, _) => ScheduleClose();
+        openTimer.Tick += (_, _) => { openTimer.Stop(); if (pending is not null && anchor is not null && hover.Pending == pending.Id) ShowCategory(pending, anchor); };
+        closeTimer.Tick += (_, _) =>
+        {
+            closeTimer.Stop();
+            if (hover.IsHeld || popup.IsMouseOver || IsMouseOver || popup.IsKeyboardFocusWithin) return;
+            if (PointerInCorridor()) { closeTimer.Start(); return; }
+            HidePopup(true);
+            if (ctx.Db.Current.Preferences.AutoHide) SetCollapsed(true);
+        };
+        MouseEnter += (_, _) => { hover.SetHold(HoldReason.PointerInDock, true); ResumePopup(); if (collapsed) SetCollapsed(false); };
+        MouseLeave += (_, _) => { hover.SetHold(HoldReason.PointerInDock, false); ScheduleClose(); };
         environmentTimer.Tick += (_, _) => { environmentTimer.Stop(); AssessForeground(); };
         foregroundCallback = (_, ev, hwnd, obj, _, _, _) => { if (ev == 3 || hwnd == Native.GetForegroundWindow() && obj == 0) Dispatcher.BeginInvoke(() => { environmentTimer.Stop(); environmentTimer.Start(); }); };
         Loaded += (_, _) => { popup.Owner = this; PositionDock(); hook = Native.SetWinEventHook(3, 3, 0, foregroundCallback, 0, 0, 2); locationHook = Native.SetWinEventHook(0x800B, 0x800B, 0, foregroundCallback, 0, 0, 2); source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle); source?.AddHook(WindowMessage); RegisterShortcut(); };
@@ -65,7 +99,7 @@ internal sealed class DockWindow : GlassWindow
         ctx.Desktop.Changed += DesktopChanged;
         discoveryTimer.Tick += async (_, _) => { discoveryTimer.Stop(); await RefreshDiscoveries(); };
         Closing += (_, _) => { if (!ctx.Closing) { ctx.Closing = true; Dispatcher.BeginInvoke(() => Application.Current.Shutdown()); } };
-        Closed += (_, _) => { openTimer.Stop(); closeTimer.Stop(); environmentTimer.Stop(); discoveryTimer.Stop(); Native.UnhookWinEvent(hook); Native.UnhookWinEvent(locationHook); if (source is not null) { Native.UnregisterHotKey(source.Handle, 1); source.RemoveHook(WindowMessage); } SystemEvents.DisplaySettingsChanged -= DisplayChanged; SystemEvents.PowerModeChanged -= PowerChanged; ctx.Db.Changed -= DataChanged; ctx.Desktop.Changed -= DesktopChanged; popup.Close(); };
+        Closed += (_, _) => { disposed = true; openTimer.Stop(); closeTimer.Stop(); environmentTimer.Stop(); discoveryTimer.Stop(); popupMotion.Stop(); selectionShift.BeginAnimation(TranslateTransform.XProperty, null); Native.UnhookWinEvent(hook); Native.UnhookWinEvent(locationHook); if (source is not null) { Native.UnregisterHotKey(source.Handle, 1); source.RemoveHook(WindowMessage); } SystemEvents.DisplaySettingsChanged -= DisplayChanged; SystemEvents.PowerModeChanged -= PowerChanged; ctx.Db.Changed -= DataChanged; ctx.Desktop.Changed -= DesktopChanged; popup.Close(); };
         Render();
         discoveryTimer.Start();
     }
@@ -76,13 +110,25 @@ internal sealed class DockWindow : GlassWindow
         renderedState = next;
         if (!before.Categories.SequenceEqual(next.Categories) || !before.Entries.SequenceEqual(next.Entries))
         {
-            HidePopup();
-            popupPages.Clear();
+            var selectedId = active?.Id;
+            var wasVisible = popup.IsVisible;
+            var affected = before.Categories.Concat(next.Categories).Select(c => c.Id).Distinct()
+                .Where(id => before.Categories.FirstOrDefault(c => c.Id == id) != next.Categories.FirstOrDefault(c => c.Id == id) ||
+                    !before.Entries.Where(e => e.CategoryId == id).SequenceEqual(next.Entries.Where(e => e.CategoryId == id))).ToHashSet();
+            foreach (var key in popupPages.Keys.Where(key => affected.Any(id => key.StartsWith(id + ":", StringComparison.Ordinal))).ToArray()) popupPages.Remove(key);
             Render();
-            Design.Reveal(strip);
+            var category = next.Categories.FirstOrDefault(c => c.Id == selectedId);
+            if (wasVisible && category is not null)
+            {
+                active = category;
+                anchor = (Button)strip.Children[next.Categories.IndexOf(category)];
+                DrawPopup();
+                UpdateSelection(anchor);
+            }
+            else HidePopup();
         }
         if (before.Preferences.Monitor != next.Preferences.Monitor)
-            PositionDock();
+        { HidePopup(); PositionDock(); }
         if (before.Preferences.AutoHide != next.Preferences.AutoHide && !next.Preferences.AutoHide)
             SetCollapsed(false);
         if (before.Preferences.QuickShortcut != next.Preferences.QuickShortcut)
@@ -107,11 +153,11 @@ internal sealed class DockWindow : GlassWindow
         catch { discoveries.ToolTip = "桌面暂不可读，点击可重新发现"; }
     }
     private void DisplayChanged(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() => { HidePopup(); PositionDock(); });
-    private void PowerChanged(object sender, PowerModeChangedEventArgs e) => Dispatcher.BeginInvoke(() => { HidePopup(); PositionDock(); });
+    private void PowerChanged(object sender, PowerModeChangedEventArgs e) => Dispatcher.BeginInvoke(() => { HidePopup(); Design.Apply(ctx.Db.Current.Preferences.Theme); PositionDock(); });
     private nint WindowMessage(nint h, int msg, nint w, nint l, ref bool handled)
     {
         if (msg == 0x2E0 || msg == 0x1A)
-            Dispatcher.BeginInvoke(PositionDock);
+            Dispatcher.BeginInvoke(() => { HidePopup(); PositionDock(); });
         if (msg == 0x312)
         {
             ctx.QuickTask();
@@ -129,11 +175,16 @@ internal sealed class DockWindow : GlassWindow
     }
     private void Render()
     {
+        openTimer.Stop();
+        pending = null;
+        var oldPositions = strip.Children.OfType<Button>().Where(b => b.DataContext is Category)
+            .ToDictionary(b => ((Category)b.DataContext).Id, b => b.TranslatePoint(new Point(), strip).X);
         strip.Children.Clear();
+        selection.Visibility = Visibility.Hidden;
         foreach (var cat in ctx.Db.Current.Categories)
         {
             var panel = new StackPanel();
-            var mini = new UniformGrid { Columns = 2, Rows = 2, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 0, 0, 6) };
+            var mini = new UniformGrid { Columns = 2, Rows = 2, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 0, 0, 4) };
             var entries = ctx.Db.Current.Entries.Where(e => e.CategoryId == cat.Id).Take(4).ToArray();
             if (entries.Length == 0)
                 mini.Children.Add(Design.Icon("folder", 20));
@@ -149,29 +200,40 @@ internal sealed class DockWindow : GlassWindow
             label.TextTrimming = TextTrimming.CharacterEllipsis;
             label.TextWrapping = TextWrapping.NoWrap;
             label.HorizontalAlignment = HorizontalAlignment.Center;
+            label.FontWeight = FontWeights.Medium;
+            label.SetBinding(TextBlock.ForegroundProperty, new System.Windows.Data.Binding("Foreground") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(Button), 1) });
             panel.Children.Add(label);
-            var button = new Button { Content = panel, Width = 80, Height = 74, Padding = new(6), ToolTip = cat.Name, AllowDrop = true };
+            var button = new Button { Content = panel, DataContext = cat, Width = 80, Height = 72, Padding = new(4), Margin = new(4, 0, 4, 0), ToolTip = cat.Name, AllowDrop = true };
+            button.SetResourceReference(StyleProperty, "CategoryButton");
+            if (oldPositions.TryGetValue(cat.Id, out var oldX))
+                button.Loaded += (_, _) =>
+                {
+                    if (button.RenderTransform is TransformGroup group && group.Children.OfType<TranslateTransform>().FirstOrDefault() is { } shift)
+                    { shift.X = oldX - button.TranslatePoint(new Point(), strip).X; Design.Animate(shift, TranslateTransform.XProperty, 0, 180); }
+                };
             System.Windows.Automation.AutomationProperties.SetName(button, cat.Name);
-            button.MouseEnter += (_, _) => { pending = cat; anchor = button; openTimer.Stop(); openTimer.Start(); closeTimer.Stop(); };
-            button.MouseLeave += (_, _) => { openTimer.Stop(); ScheduleClose(); };
-            button.Click += (_, _) => { ShowCategory(cat, button); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
+            button.MouseEnter += (_, _) => QueueCategory(cat, button);
+            button.MouseLeave += (_, _) => { hover.Leave(cat.Id); if (pending?.Id == cat.Id) { pending = null; openTimer.Stop(); } ScheduleClose(); };
+            button.Click += (_, _) => { ShowCategory(cat, button, true); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
             button.PreviewMouseLeftButtonDown += (_, e) => { dragStart = e.GetPosition(this); dragCategory = cat.Id; };
-            button.PreviewMouseMove += (_, e) => { if (e.LeftButton != MouseButtonState.Pressed || dragCategory != cat.Id || (e.GetPosition(this) - dragStart).Length < 8) return; holds++; try { DragDrop.DoDragDrop(button, new DataObject("GlassBogo.Category", cat.Id), DragDropEffects.Move); } finally { holds--; dragCategory = null; ScheduleClose(); } };
-            button.DragOver += (_, e) => { openTimer.Stop(); closeTimer.Stop(); e.Effects = DragDropEffects.Link; e.Handled = true; };
-            button.Drop += async (_, e) => { e.Handled = true; try { if (e.Data.GetData("GlassBogo.Category") is string id) ctx.Catalog.ReorderCategory(id, cat.Id); else await ImportDrop(e.Data, cat.Id); } catch (Exception ex) { Design.Error(ex); } };
+            button.PreviewMouseMove += (_, e) => { if (e.LeftButton != MouseButtonState.Pressed || dragCategory != cat.Id || (e.GetPosition(this) - dragStart).Length < 8) return; var hold = hover.Hold(HoldReason.Dragging); try { DragDrop.DoDragDrop(button, new DataObject("GlassBogo.Category", cat.Id), DragDropEffects.Move); } finally { hold.Dispose(); dragCategory = null; ScheduleClose(); } };
+            TrackExternalDrag(button);
+            button.DragEnter += (_, _) => QueueCategory(cat, button, true);
+            button.DragLeave += (_, _) => { hover.Leave(cat.Id); openTimer.Stop(); };
+            button.DragOver += (_, e) => { closeTimer.Stop(); e.Effects = e.Data.GetDataPresent("GlassBogo.Category") || e.Data.GetDataPresent("GlassBogo.Entry") ? DragDropEffects.Move : DragDropEffects.Link; e.Handled = true; };
+            button.Drop += async (_, e) => { e.Handled = true; var hold = hover.Hold(HoldReason.OLEDrag); try { if (e.Data.GetData("GlassBogo.Category") is string id) ctx.Catalog.ReorderCategory(id, cat.Id); else await ImportDrop(e.Data, cat.Id); } catch (Exception ex) { Design.Error(ex); } finally { hold.Dispose(); ScheduleClose(); } };
             var menu = new ContextMenu();
             if (cat.Id != "inbox")
             {
-                AddMenu(menu, "重命名", () => { holds++; try { Design.Prompt(this, "分类名称", cat.Name, name => ctx.Catalog.SaveCategory(cat.Id, name)); } finally { holds--; ScheduleClose(); } });
+                AddMenu(menu, "重命名", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "分类名称", cat.Name, name => ctx.Catalog.SaveCategory(cat.Id, name)); } finally { hold.Dispose(); ScheduleClose(); } });
                 AddMenu(menu, "移除分类（入口回到待整理）", () => ctx.Catalog.RemoveCategory(cat.Id));
             }
             AddMenu(menu, "添加入口", () => ctx.OpenWorkspace(true));
-            menu.Opened += (_, _) => holds++;
-            menu.Closed += (_, _) => { holds--; ScheduleClose(); };
+            TrackMenu(menu);
             button.ContextMenu = menu;
             strip.Children.Add(button);
         }
-        var add = Design.Button("＋ 分类", () => { holds++; try { Design.Prompt(this, "新建分类", save: name => ctx.Catalog.SaveCategory(null, name)); } finally { holds--; } });
+        var add = Design.Button("＋ 分类", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "新建分类", save: name => ctx.Catalog.SaveCategory(null, name)); } finally { hold.Dispose(); ScheduleClose(); } });
         add.Width = 76;
         add.ToolTip = "新建分类";
         add.Padding = new(8);
@@ -190,57 +252,90 @@ internal sealed class DockWindow : GlassWindow
         }
         catch { }
     }
-    private void ShowCategory(Category category, Button button)
+    private void QueueCategory(Category category, Button button, bool dragging = false)
+    {
+        ResumePopup();
+        pending = category;
+        anchor = button;
+        openTimer.Stop();
+        openTimer.Interval = TimeSpan.FromMilliseconds(hover.Enter(category.Id, dragging));
+        openTimer.Start();
+    }
+    private void UpdateSelection(Button button)
+    {
+        foreach (var tile in strip.Children.OfType<Button>()) tile.Tag = ReferenceEquals(tile, button) ? "active" : null;
+        var x = strip.Children.IndexOf(button) * 88d;
+        if (selection.Visibility != Visibility.Visible) selectionShift.X = x;
+        selection.Visibility = Visibility.Visible;
+        Design.Animate(selectionShift, TranslateTransform.XProperty, x, 90);
+    }
+    private void ShowCategory(Category category, Button button, bool clicked = false)
     {
         openTimer.Stop();
         closeTimer.Stop();
-        hideGeneration++;
-        ((FrameworkElement)popup.Content).BeginAnimation(OpacityProperty, null);
-        if (active?.Id == category.Id && popup.IsVisible)
+        var wasClosing = hover.Phase == HoverPhase.Closing;
+        var fresh = !popup.IsVisible;
+        var changed = hover.Open(category.Id);
+        var generation = hover.Generation;
+        if (!changed && !fresh)
+        {
+            if (wasClosing) popupMotion.Open(false, 140, () => hover.Opened(generation));
+            else hover.Opened(generation);
             return;
+        }
         active = category;
-        foreach (var tile in strip.Children.OfType<Button>()) tile.Tag = ReferenceEquals(tile, button) ? "active" : null;
+        UpdateSelection(button);
         anchor = button;
         page = 0;
-        DrawPopup();
+        DrawPopup(!fresh && !wasClosing);
         var screen = Display.FromHandle(new WindowInteropHelper(this).Handle);
         var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
         // A stable panel position avoids chasing a moving window while switching groups.
-        var pos = PointToScreen(new Point(ActualWidth / 2, 0));
-        popup.Left = Math.Clamp(pos.X / scale - popup.Width / 2, screen.WorkingArea.Left / scale, Math.Max(screen.WorkingArea.Left / scale, screen.WorkingArea.Right / scale - popup.Width));
-        popup.Top = Math.Max(screen.WorkingArea.Top / scale, pos.Y / scale - popup.Height - 4);
+        var pos = PointToScreen(new Point());
+        var placement = SurfacePlacement.Popup(screen.WorkingArea, scale,
+            new((int)pos.X, (int)pos.Y, (int)(pos.X + ActualWidth * scale), (int)(pos.Y + ActualHeight * scale)));
+        popup.Width = placement.Width / scale;
+        popup.Height = placement.Height / scale;
+        popup.Left = placement.Left / scale;
+        popup.Top = placement.Top / scale;
         if (!popup.IsVisible)
         {
             popup.Show();
         }
-        popup.RevealBody();
-        var pixelWidth = (int)(popup.Width * scale);
-        var pixelHeight = (int)(popup.Height * scale);
-        var pixelLeft = (int)Math.Clamp(pos.X - pixelWidth / 2d, screen.WorkingArea.Left, Math.Max(screen.WorkingArea.Left, screen.WorkingArea.Right - pixelWidth));
-        var pixelTop = (int)Math.Max(screen.WorkingArea.Top, pos.Y - pixelHeight - 4 * scale);
-        Native.SetWindowPos(new WindowInteropHelper(popup).Handle, 0, pixelLeft, pixelTop, pixelWidth, pixelHeight, 0x14);
+        if (fresh || wasClosing) popupMotion.Open(fresh, clicked ? 140 : 150, () => hover.Opened(generation));
+        else hover.Opened(generation);
+        Native.SetWindowPos(new WindowInteropHelper(popup).Handle, 0, placement.Left, placement.Top, placement.Width, placement.Height, 0x14);
     }
-    private void DrawPopup()
+    private void DrawPopup(bool crossFade = false)
     {
         if (active is null)
             return;
+        var entries = ctx.Db.Current.Entries.Where(e => e.CategoryId == active.Id).ToArray();
+        var pages = Math.Max(1, (int)Math.Ceiling(entries.Length / 12d));
+        page = Math.Clamp(page, 0, pages - 1);
         var cacheKey = active.Id + ":" + page;
         if (popupPages.TryGetValue(cacheKey, out var cached))
         {
-            popup.SetBody(cached.Content);
+            popup.SetBody(cached.Content, crossFade);
             visibleEntries = cached.Entries;
             return;
         }
-        var entries = ctx.Db.Current.Entries.Where(e => e.CategoryId == active.Id).ToArray();
-        var layout = new DockPanel();
-        var title = Design.Text(active.Name, 21);
+        var layout = new DockPanel { MinWidth = 400, MinHeight = 362 };
+        var header = new DockPanel { Height = 48, LastChildFill = true };
+        var manage = Design.IconButton("search", "搜索与管理入口", () => { HidePopup(); ctx.OpenWorkspace(); });
+        manage.Width = manage.Height = 36;
+        DockPanel.SetDock(manage, Dock.Right);
+        header.Children.Add(manage);
+        var title = Design.Text(active.Name + $"  ·  {entries.Length}", 18);
+        title.TextWrapping = TextWrapping.NoWrap;
+        title.TextTrimming = TextTrimming.CharacterEllipsis;
         title.FontWeight = FontWeights.SemiBold;
-        title.Margin = new(6, 0, 4, 16);
-        DockPanel.SetDock(title, Dock.Top);
-        layout.Children.Add(title);
-        var pages = Math.Max(1, (int)Math.Ceiling(entries.Length / 12d));
-        page = Math.Clamp(page, 0, pages - 1);
+        title.Margin = new(6, 0, 4, 0);
+        header.Children.Add(title);
+        DockPanel.SetDock(header, Dock.Top);
+        layout.Children.Add(header);
         var footer = Design.Row(Design.Button("‹", () => { page = Math.Max(0, page - 1); DrawPopup(); }), Design.Text($"{page + 1} / {pages} · {entries.Length} 个入口", 12, "Muted"), Design.Button("›", () => { page = Math.Min(pages - 1, page + 1); DrawPopup(); }), Design.Button("管理", () => { HidePopup(); ctx.OpenWorkspace(); }));
+        footer.Height = 44;
         DockPanel.SetDock(footer, Dock.Bottom);
         layout.Children.Add(footer);
         var grid = new UniformGrid { Columns = 4, Rows = 3 };
@@ -248,7 +343,7 @@ internal sealed class DockWindow : GlassWindow
         foreach (var entry in entries.Skip(page * 12).Take(12))
         {
             var content = new StackPanel();
-            var image = new Image { Width = 36, Height = 36, Margin = new(0, 0, 0, 9) };
+            var image = new Image { Width = 44, Height = 44, Margin = new(0, 0, 0, 8) };
             _ = SetIcon(image, entry);
             content.Children.Add(image);
             var label = Design.Text(entry.Name, 12);
@@ -262,26 +357,36 @@ internal sealed class DockWindow : GlassWindow
             var dragged = false;
             Point start = default;
             b.PreviewMouseLeftButtonDown += (_, e) => { start = e.GetPosition(b); dragged = false; };
-            b.PreviewMouseMove += (_, e) => { if (e.LeftButton != MouseButtonState.Pressed || dragged || (e.GetPosition(b) - start).Length < 8) return; dragged = true; holds++; try { DragDrop.DoDragDrop(b, new DataObject("GlassBogo.Entry", entry.Id), DragDropEffects.Move); } finally { holds--; ScheduleClose(); } };
+            b.PreviewMouseMove += (_, e) => { if (e.LeftButton != MouseButtonState.Pressed || dragged || (e.GetPosition(b) - start).Length < 8) return; dragged = true; var hold = hover.Hold(HoldReason.Dragging); try { DragDrop.DoDragDrop(b, new DataObject("GlassBogo.Entry", entry.Id), DragDropEffects.Move); } finally { hold.Dispose(); ScheduleClose(); } };
             b.Click += async (_, _) => { if (dragged) return; HidePopup(); await ctx.Open(entry); };
             b.Drop += (_, e) => { if (e.Data.GetData("GlassBogo.Entry") is string id) { e.Handled = true; Design.Guard(() => ctx.Catalog.Reorder(id, entry.Id)); } };
             var menu = new ContextMenu();
+            AddMenu(menu, "重新定位目标…", () => { HidePopup(); ctx.LocateEntries([entry]); });
             AddMenu(menu, "移除入口（保留原文件）", () => ctx.Catalog.Remove([entry.Id]));
-            menu.Opened += (_, _) => holds++;
-            menu.Closed += (_, _) => { holds--; ScheduleClose(); };
+            TrackMenu(menu);
             b.ContextMenu = menu;
+            _ = MarkUnavailable(b, entry);
             grid.Children.Add(b);
             buttons.Add(b);
         }
         if (entries.Length == 0)
-            layout.Children.Add(Design.Text("把应用或桌面文件拖到分类方块，\n即可添加入口。", 14, "Muted"));
+        {
+            var empty = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
+            empty.Children.Add(Design.Icon("folder", 36));
+            var hint = Design.Text("拖入应用或文件以添加入口", 14, "Muted");
+            hint.Margin = new(0, 16, 0, 12);
+            empty.Children.Add(hint);
+            empty.Children.Add(Design.Button("添加入口", () => { HidePopup(); ctx.OpenWorkspace(true); }));
+            layout.Children.Add(empty);
+        }
         else
             layout.Children.Add(grid);
         if (popupPages.Count >= 24)
             popupPages.Remove(popupPages.Keys.First());
         visibleEntries = buttons.ToArray();
-        popupPages[cacheKey] = new(layout, visibleEntries);
-        popup.SetBody(layout);
+        var viewport = new ScrollViewer { Content = layout, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        popupPages[cacheKey] = new(viewport, visibleEntries);
+        popup.SetBody(viewport, crossFade);
         popup.AllowDrop = true;
         popup.Drop -= PopupDrop;
         popup.Drop += PopupDrop;
@@ -291,11 +396,13 @@ internal sealed class DockWindow : GlassWindow
         if (e.Handled || active is null)
             return;
         e.Handled = true;
+        var hold = hover.Hold(HoldReason.OLEDrag);
         try
         {
             await ImportDrop(e.Data, active.Id);
         }
         catch (Exception ex) { Design.Error(ex); }
+        finally { hold.Dispose(); ScheduleClose(); }
     }
     internal async Task ImportDrop(IDataObject data, string category)
     {
@@ -320,8 +427,69 @@ internal sealed class DockWindow : GlassWindow
     }
     private void ScheduleClose()
     {
+        if (disposed) return;
         closeTimer.Stop();
+        hover.ScheduleClose();
         closeTimer.Start();
+    }
+    private async Task MarkUnavailable(Button button, Entry entry)
+    {
+        if (entry.Kind != "path") return;
+        var missing = await Task.Run(() => !File.Exists(entry.Target) && !Directory.Exists(entry.Target));
+        if (!missing || disposed) return;
+        // This continuation owns only its cached tile, never the current category or a shared icon.
+        button.ToolTip = "⚠ 目标失效 · 右键选择“重新定位目标”\n" + entry.Target;
+        System.Windows.Automation.AutomationProperties.SetHelpText(button, "目标失效，可重新定位目标");
+        if (button.Content is StackPanel panel && panel.Children.OfType<TextBlock>().FirstOrDefault() is { } label)
+        {
+            label.Text = "⚠ " + entry.Name;
+        }
+    }
+    private void ResumePopup()
+    {
+        closeTimer.Stop();
+        hover.CancelClose();
+        if (popup.IsVisible && popupMotion.IsClosing)
+        {
+            var generation = hover.Generation;
+            popupMotion.Open(false, 140, () => hover.Opened(generation));
+        }
+    }
+    private void TrackMenu(ContextMenu menu)
+    {
+        IDisposable? hold = null;
+        menu.Opened += (_, _) => { ResumePopup(); hold ??= hover.Hold(HoldReason.ContextMenu); };
+        menu.Closed += (_, _) => { hold?.Dispose(); hold = null; ScheduleClose(); };
+    }
+    private void TrackExternalDrag(UIElement element)
+    {
+        IDisposable? hold = null;
+        void Release() { hold?.Dispose(); hold = null; ScheduleClose(); }
+        element.PreviewDragEnter += (_, _) => { ResumePopup(); hold ??= hover.Hold(HoldReason.OLEDrag); };
+        element.PreviewDragLeave += (_, _) => Release();
+        element.PreviewDrop += (_, _) => { openTimer.Stop(); Release(); };
+        if (element is FrameworkElement framework) framework.Unloaded += (_, _) => Release();
+    }
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct CursorPoint { public int X, Y; }
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out CursorPoint point);
+    private bool PointerInCorridor()
+    {
+        if (!popup.IsVisible || !GetCursorPos(out var cursor) ||
+            !Native.GetWindowRect(new WindowInteropHelper(this).Handle, out var dockRect) ||
+            !Native.GetWindowRect(new WindowInteropHelper(popup).Handle, out var popupRect)) return false;
+        // Only the current category's path to the panel is protected, not the whole desktop.
+        var left = dockRect.Left;
+        var right = dockRect.Right;
+        if (anchor is { IsLoaded: true })
+        {
+            var start = anchor.PointToScreen(new Point());
+            left = (int)start.X;
+            right = (int)(start.X + anchor.ActualWidth * VisualTreeHelper.GetDpi(this).DpiScaleX);
+        }
+        return HoverCoordinator.InCorridor(cursor.X, cursor.Y, left, right, dockRect.Top,
+            popupRect.Left, popupRect.Right, popupRect.Bottom, 12 * VisualTreeHelper.GetDpi(this).DpiScaleX);
     }
     private void ChangePage(int direction)
     {
@@ -330,8 +498,7 @@ internal sealed class DockWindow : GlassWindow
         var next = Math.Clamp(page + direction, 0, pages - 1);
         if (next == page) return;
         page = next;
-        DrawPopup();
-        popup.RevealBody();
+        DrawPopup(true);
     }
     private void PopupKeyDown(object sender, KeyEventArgs e)
     {
@@ -361,35 +528,46 @@ internal sealed class DockWindow : GlassWindow
     private void HidePopup(bool animate = false)
     {
         openTimer.Stop();
-        active = null;
-        foreach (var tile in strip.Children.OfType<Button>()) tile.Tag = null;
-        var generation = ++hideGeneration;
-        if (animate && popup.IsVisible && SystemParameters.ClientAreaAnimation)
+        closeTimer.Stop();
+        pending = null;
+        void Finish()
         {
-            var fade = new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(160));
-            fade.Completed += (_, _) => { if (hideGeneration == generation) popup.Hide(); };
-            ((FrameworkElement)popup.Content).BeginAnimation(OpacityProperty, fade);
+            popup.Hide();
+            popup.StopBodyTransition();
+            popupMotion.Stop();
+            active = null;
+            selection.Visibility = Visibility.Hidden;
+            foreach (var tile in strip.Children.OfType<Button>()) tile.Tag = null;
+            hover.SetHold(HoldReason.PointerInPopup, false);
+            hover.SetHold(HoldReason.KeyboardFocus, false);
         }
-        else popup.Hide();
+        if (animate && popup.IsVisible)
+        {
+            if (hover.BeginClose(false) is not { } generation) return;
+            popupMotion.Close(() => { if (hover.CompleteClose(generation)) Finish(); });
+        }
+        else { hover.Reset(); Finish(); }
     }
     private void SetCollapsed(bool value)
     {
         collapsed = value;
-        Height = value ? 20 : 118;
+        Height = value ? 20 : 90;
         strip.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
         PositionDock();
     }
     private Display Screen() => Display.AllScreens.FirstOrDefault(s => s.DeviceName == ctx.Db.Current.Preferences.Monitor) ?? Display.PrimaryScreen!;
     private void PositionDock()
     {
-        var area = Screen().WorkingArea;
-        var scale = Screen().Scale;
-        Width = Math.Min(area.Width / scale - 32, Math.Max(440, ctx.Db.Current.Categories.Count * 88 + 280));
-        Left = area.Left / scale + (area.Width / scale - Width) / 2;
-        Top = area.Bottom / scale - Height - 8;
+        var screen = Screen();
+        var scale = screen.Scale;
+        var placement = SurfacePlacement.Dock(screen.WorkingArea, scale, ctx.Db.Current.Categories.Count, collapsed);
+        Width = placement.Width / scale;
+        Height = placement.Height / scale;
+        Left = placement.Left / scale;
+        Top = placement.Top / scale;
         var handle = new WindowInteropHelper(this).Handle;
         if (handle != 0)
-            Native.SetWindowPos(handle, 0, (int)(area.Left + (area.Width - Width * scale) / 2), (int)(area.Bottom - (Height + 8) * scale), (int)(Width * scale), (int)(Height * scale), 0x14);
+            Native.SetWindowPos(handle, 0, placement.Left, placement.Top, placement.Width, placement.Height, 0x14);
     }
     private void AssessForeground()
     {
@@ -439,6 +617,56 @@ internal sealed class DockWindow : GlassWindow
         if (!key.Handled || !visibleEntries[1].IsKeyboardFocusWithin)
             throw new InvalidOperationException("分类方向键未移动焦点。");
         HidePopup();
+    }
+    internal async Task QaVerifyTransitions()
+    {
+        var cat = ctx.Db.Current.Categories[1];
+        var button = (Button)strip.Children[1];
+        ShowCategory(cat, button);
+        await Task.Delay(180);
+        var handle = new WindowInteropHelper(popup).Handle;
+        var first = visibleEntries[0];
+        hover.SetHold(HoldReason.PointerInDock, false);
+        hover.SetHold(HoldReason.PointerInPopup, false);
+        hover.SetHold(HoldReason.KeyboardFocus, false);
+        HidePopup(true);
+        await Task.Delay(40);
+        ShowCategory(cat, button);
+        await Task.Delay(180);
+        if (!popup.IsVisible || popup.SurfaceRoot.Opacity != 1 || !ReferenceEquals(first, visibleEntries[0]))
+            throw new InvalidOperationException("中断关闭后没有恢复相同页面。");
+        for (var i = 2; i < 6; i++) QaCycle(i);
+        var outgoing = visibleEntries[0];
+        QaCycle(6);
+        popup.Activate();
+        if (GlassEnvironment.Animate && outgoing.Focus())
+            throw new InvalidOperationException("交叉淡化中的旧页面仍能获得键盘焦点。");
+        var focused = visibleEntries[0];
+        if (!focused.Focus()) throw new InvalidOperationException("新页面无法获得焦点。");
+        await Task.Delay(200);
+        if (!focused.IsKeyboardFocusWithin)
+            throw new InvalidOperationException("交叉淡化结束后当前页面丢失焦点。");
+        if (handle != new WindowInteropHelper(popup).Handle || popup.SurfaceRoot.HasAnimatedProperties ||
+            ((TranslateTransform)popup.SurfaceRoot.RenderTransform).HasAnimatedProperties)
+            throw new InvalidOperationException("分类切换没有复用窗口或动画时钟未释放。");
+        if (Width > Screen().WorkingArea.Width / Screen().Scale * .7 + 1 || button.Width != 80 || button.Height != 72)
+            throw new InvalidOperationException("Dock 尺寸不符合规范。");
+        HidePopup();
+    }
+    internal void QaCompactPopup()
+    {
+        QaCycle(2);
+        popup.StopBodyTransition();
+        popup.Width = 360;
+        popup.Height = 280;
+        popup.UpdateLayout();
+        var viewport = (ScrollViewer)popupPages[active!.Id + ":" + page].Content;
+        if (viewport.ScrollableHeight <= 0 || viewport.ScrollableWidth <= 0)
+            throw new InvalidOperationException("小工作区没有提供可访问的滚动内容。");
+        visibleEntries.Last().BringIntoView();
+        popup.UpdateLayout();
+        if (viewport.VerticalOffset <= 0)
+            throw new InvalidOperationException("小工作区的最后一行入口不可访问。");
     }
     internal double QaCycle(int index)
     {

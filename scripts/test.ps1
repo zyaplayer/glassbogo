@@ -1,4 +1,4 @@
-param([string]$DotNetPath = 'dotnet', [switch]$DesktopSmoke, [switch]$Endurance)
+param([string]$DotNetPath = 'dotnet', [switch]$DesktopSmoke, [switch]$Endurance, [ValidateRange(10, 1800)][int]$DesktopSeconds = 10)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 Push-Location $repo
@@ -11,7 +11,7 @@ try {
     & $DotNetPath run --project tests/GlassBogo.WindowsTests -c Release -- $repo
     if ($LASTEXITCODE -ne 0) { throw 'Windows 服务测试失败' }
     if ($DesktopSmoke -or $Endurance) {
-        $seconds = if ($Endurance) { 1800 } else { 10 }
+        $seconds = if ($Endurance) { 1800 } else { $DesktopSeconds }
         $output = Join-Path $repo ('artifacts/qa-' + (Get-Date -Format yyyyMMdd-HHmmss))
         & $DotNetPath build tests/GlassBogo.DesktopHarness -c Release -o artifacts/harness
         if ($LASTEXITCODE -ne 0) { throw '隔离桌面测试宿主构建失败' }

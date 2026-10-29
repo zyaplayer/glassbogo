@@ -4,10 +4,6 @@ using System.Windows.Interop;
 
 namespace GlassBogo.App;
 
-internal record PixelRect(int Left, int Top, int Right, int Bottom)
-{
-    internal int Width => Right - Left; internal int Height => Bottom - Top;
-}
 internal record Display(string DeviceName, PixelRect Bounds, PixelRect WorkingArea, bool Primary, double Scale)
 {
     private delegate bool MonitorProc(nint monitor, nint dc, nint rect, nint data);
