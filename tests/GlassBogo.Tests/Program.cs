@@ -70,5 +70,102 @@ Test("高缩放小工作区浮层不越界", () =>
     Check(popup == work);
     Check(SurfacePlacement.Dock(work, 2, 10, true).Height == 40);
 });
+// ---- 桌面收纳：唯一会移动用户文件的路径 ----
+string HarvestDesk(string tag) { var dir = Path.Combine(root, "desk-" + tag); Directory.CreateDirectory(dir); return dir; }
+Test("收纳规划跳过系统文件与不存在项", () =>
+{
+    var desktop = HarvestDesk("plan");
+    File.WriteAllText(Path.Combine(desktop, "desktop.ini"), "x");
+    File.WriteAllText(Path.Combine(desktop, "报告.docx"), "doc");
+    var archive = Path.Combine(root, "archive-plan");
+    var plan = new DesktopHarvest(Path.Combine(root, "data-plan")).Plan([Path.Combine(desktop, "desktop.ini"), Path.Combine(desktop, "报告.docx"), Path.Combine(desktop, "ghost.txt")], archive, new DateTime(2026, 10, 29, 16, 0, 0));
+    Check(plan.Items.Count == 1 && plan.Items[0].Kind == HarvestKind.Document && plan.Items[0].Name == "报告.docx");
+    Check(plan.Items[0].Destination.StartsWith(Path.GetFullPath(archive), StringComparison.OrdinalIgnoreCase));
+});
+Test("收纳规划同名加序号不覆盖", () =>
+{
+    var a = HarvestDesk("dup-a");
+    var b = HarvestDesk("dup-b");
+    File.WriteAllText(Path.Combine(a, "同名.txt"), "one");
+    File.WriteAllText(Path.Combine(b, "同名.txt"), "two");
+    var archive = Path.Combine(root, "archive-dup");
+    Directory.CreateDirectory(archive);
+    File.WriteAllText(Path.Combine(archive, "同名.txt"), "existing");
+    var plan = new DesktopHarvest(Path.Combine(root, "data-dup")).Plan([Path.Combine(a, "同名.txt"), Path.Combine(b, "同名.txt")], archive, DateTime.Now);
+    Check(plan.Items.Count == 2);
+    Check(plan.Items[0].Destination.EndsWith("同名 (2).txt", StringComparison.Ordinal) && plan.Items[1].Destination.EndsWith("同名 (3).txt", StringComparison.Ordinal));
+    Check(File.ReadAllText(Path.Combine(archive, "同名.txt")) == "existing");
+});
+Test("收纳执行移动文件与文件夹并写清单", () =>
+{
+    var desktop = HarvestDesk("exec");
+    var file = Path.Combine(desktop, "笔记.txt");
+    File.WriteAllText(file, "keep");
+    var folder = Path.Combine(desktop, "项目");
+    Directory.CreateDirectory(folder);
+    File.WriteAllText(Path.Combine(folder, "a.cs"), "code");
+    var link = Path.Combine(desktop, "VSCode.lnk");
+    File.WriteAllText(link, "lnk");
+    var harvest = new DesktopHarvest(Path.Combine(root, "data-exec"));
+    var plan = harvest.Plan([file, folder, link], Path.Combine(root, "archive-exec"), DateTime.Now);
+    Check(plan.Items.Count == 3);
+    var batch = harvest.Execute(plan);
+    Check(batch.MovedCount == 3 && batch.RestingCount == 0);
+    Check(!File.Exists(file) && !Directory.Exists(folder) && !File.Exists(link));
+    Check(File.ReadAllText(batch.Items.Single(i => i.Kind == HarvestKind.Document).Destination) == "keep");
+    Check(File.ReadAllText(Path.Combine(batch.Items.Single(i => i.Kind == HarvestKind.Folder).Destination, "a.cs")) == "code");
+    Check(File.Exists(harvest.ManifestPath(batch.Id)));
+    Check(harvest.Latest()?.Id == batch.Id && harvest.History().Count == 1);
+});
+Test("收纳中途失败自动回滚", () =>
+{
+    var desktop = HarvestDesk("rollback");
+    var first = Path.Combine(desktop, "a.txt");
+    File.WriteAllText(first, "a");
+    var locked = Path.Combine(desktop, "b.txt");
+    File.WriteAllText(locked, "b");
+    var archive = Path.Combine(root, "archive-rollback");
+    var harvest = new DesktopHarvest(Path.Combine(root, "data-rollback"));
+    var plan = harvest.Plan([first, locked], archive, DateTime.Now);
+    using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+        Throws(() => harvest.Execute(plan));
+    Check(File.ReadAllText(first) == "a" && File.ReadAllText(locked) == "b");
+    Check(!File.Exists(Path.Combine(archive, "a.txt")));
+    Check(harvest.Latest() is null);
+});
+Test("撤销收纳全部回原位", () =>
+{
+    var desktop = HarvestDesk("undo");
+    var file = Path.Combine(desktop, "报告.pdf");
+    File.WriteAllText(file, "pdf");
+    var harvest = new DesktopHarvest(Path.Combine(root, "data-undo"));
+    var batch = harvest.Execute(harvest.Plan([file], Path.Combine(root, "archive-undo"), DateTime.Now));
+    var result = harvest.Undo(batch);
+    Check(result.Restored == 1 && result.Occupied == 0 && result.Missing == 0);
+    Check(File.ReadAllText(file) == "pdf");
+    Check(harvest.Latest() is null);
+});
+Test("撤销时原位被占保留归档", () =>
+{
+    var desktop = HarvestDesk("occupied");
+    var file = Path.Combine(desktop, "数据.xlsx");
+    File.WriteAllText(file, "original");
+    var harvest = new DesktopHarvest(Path.Combine(root, "data-occupied"));
+    var batch = harvest.Execute(harvest.Plan([file], Path.Combine(root, "archive-occupied"), DateTime.Now));
+    File.WriteAllText(file, "new");
+    var result = harvest.Undo(batch);
+    Check(result.Occupied == 1 && result.Restored == 0);
+    Check(File.ReadAllText(batch.Items[0].Destination) == "original");
+    Check(File.ReadAllText(file) == "new");
+});
+Test("归档夹自身不被收纳且空计划拒绝", () =>
+{
+    var archive = Path.Combine(root, "archive-self");
+    Directory.CreateDirectory(Path.Combine(archive, "旧"));
+    var harvest = new DesktopHarvest(Path.Combine(root, "data-self"));
+    var plan = harvest.Plan([archive], archive, DateTime.Now);
+    Check(plan.Items.Count == 0);
+    Throws(() => harvest.Execute(plan));
+});
 Console.WriteLine($"RESULT passed={passed} failed={failed}; isolated data={root}");
 Environment.ExitCode = failed == 0 ? 0 : 1;
