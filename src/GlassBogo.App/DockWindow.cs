@@ -28,8 +28,9 @@ internal sealed class DockWindow : GlassWindow
     private nint hook; private nint locationHook; private readonly Native.WinEventProc foregroundCallback;
     private HwndSource? source; private bool collapsed; private readonly Button discoveries;
     private bool disposed;
-    private readonly Border line = new() { Width = 60, Height = 6, CornerRadius = new(3), Opacity = .38, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
-    private readonly DispatcherTimer expandTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
+    private readonly Grid line;
+    private readonly ScaleTransform handleScale;
+    private readonly Border handlePill;
     private FrameworkElement? bodyPanel;
     internal string SummonStatus { get; private set; } = "";
     internal string ShortcutStatus { get; private set; } = "";
@@ -83,7 +84,8 @@ internal sealed class DockWindow : GlassWindow
         var scroller = new ScrollViewer { Content = categoryLayer, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
         scroller.PreviewMouseWheel += (_, e) => { scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - e.Delta); e.Handled = true; };
         body.Children.Add(scroller);
-        line.SetResourceReference(Border.BackgroundProperty, "Ink");
+        line = HandleVisual.Create(104, 9, out handleScale, out handlePill);
+        line.Visibility = Visibility.Collapsed;
         var shell = new Grid();
         shell.Children.Add(body);
         shell.Children.Add(line);
@@ -98,9 +100,10 @@ internal sealed class DockWindow : GlassWindow
             HidePopup(true);
             SetCollapsed(true);
         };
-        MouseEnter += (_, _) => { hover.SetHold(HoldReason.PointerInDock, true); ResumePopup(); if (collapsed) { expandTimer.Stop(); expandTimer.Start(); } };
-        MouseLeave += (_, _) => { hover.SetHold(HoldReason.PointerInDock, false); expandTimer.Stop(); ScheduleClose(); };
-        expandTimer.Tick += (_, _) => { expandTimer.Stop(); if (IsMouseOver) SetCollapsed(false); };
+        MouseEnter += (_, _) => { hover.SetHold(HoldReason.PointerInDock, true); ResumePopup(); HandleVisual.Hover(handleScale, handlePill, true); };
+        MouseLeave += (_, _) => { hover.SetHold(HoldReason.PointerInDock, false); HandleVisual.Hover(handleScale, handlePill, false); ScheduleClose(); };
+        // 收起态改成点击展开：悬停只提亮，不再自动弹开，避免窗口缩放补偿导致的闪开闪收。
+        MouseLeftButtonUp += (_, _) => { if (collapsed) SetCollapsed(false); };
         environmentTimer.Tick += (_, _) => { environmentTimer.Stop(); AssessForeground(); };
         foregroundCallback = (_, ev, hwnd, obj, _, _, _) => { if (ev == 3 || hwnd == Native.GetForegroundWindow() && obj == 0) Dispatcher.BeginInvoke(() => { environmentTimer.Stop(); environmentTimer.Start(); }); };
         Loaded += (_, _) => { popup.Owner = this; PositionDock(); hook = Native.SetWinEventHook(3, 3, 0, foregroundCallback, 0, 0, 2); locationHook = Native.SetWinEventHook(0x800B, 0x800B, 0, foregroundCallback, 0, 0, 2); source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle); source?.AddHook(WindowMessage); RegisterShortcut(); };
@@ -825,11 +828,11 @@ internal sealed class DockWindow : GlassWindow
         PixelRect placement;
         if (collapsed)
         {
-            // 收起态只是一条 60×6 的细线：窗口保留 240×20 作为悬停热区，材质隐藏。
-            var width = (int)Math.Round(240 * scale);
-            var height = (int)Math.Round(20 * scale);
+            // 收起态只是一条带抓握点的细胶囊：窗口保留热区，材质隐藏。
+            var width = (int)Math.Round(280 * scale);
+            var height = (int)Math.Round(26 * scale);
             var left = work.Left + (work.Width - width) / 2;
-            var top = Math.Max(work.Top, work.Bottom - height - (int)Math.Round(10 * scale));
+            var top = Math.Max(work.Top, work.Bottom - height - (int)Math.Round(8 * scale));
             placement = new(left, top, left + width, top + height);
         }
         else

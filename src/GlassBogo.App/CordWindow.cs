@@ -11,14 +11,15 @@ namespace GlassBogo.App;
 /// </summary>
 internal sealed class CordWindow : GlassWindow
 {
-    private const double HotWidth = 220;
-    private const double HotHeight = 18;
+    private const double HotWidth = 260;
+    private const double HotHeight = 22;
 
     private readonly AppContext ctx;
-    private readonly DispatcherTimer openTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private readonly DispatcherTimer closeTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly DispatcherTimer environmentTimer = new() { Interval = TimeSpan.FromMilliseconds(140) };
-    private readonly Border line = new() { Width = 40, Height = 6, CornerRadius = new(3), Opacity = .38, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
+    private readonly Grid line;
+    private readonly ScaleTransform handleScale;
+    private readonly Border handlePill;
     private readonly Native.WinEventProc foregroundCallback;
     private nint hook;
     private CalendarPanelWindow? panel;
@@ -34,12 +35,13 @@ internal sealed class CordWindow : GlassWindow
         ResizeMode = ResizeMode.NoResize;
         MinHeight = 0;
         SetInsets(0);
-        line.SetResourceReference(Border.BackgroundProperty, "Ink");
+        line = HandleVisual.Create(72, 9, out handleScale, out handlePill);
         SetBody(line);
         SetSurfaceHidden(true);
-        MouseEnter += (_, _) => { closeTimer.Stop(); openTimer.Stop(); openTimer.Start(); };
-        MouseLeave += (_, _) => ScheduleClose();
-        openTimer.Tick += (_, _) => { openTimer.Stop(); if (IsMouseOver) Pull(); };
+        MouseEnter += (_, _) => { HandleVisual.Hover(handleScale, handlePill, true); closeTimer.Stop(); };
+        MouseLeave += (_, _) => { HandleVisual.Hover(handleScale, handlePill, false); ScheduleClose(); };
+        // 点击拉出/收回，悬停只提亮：不再靠 120ms 悬停定时器自动弹开。
+        MouseLeftButtonUp += (_, _) => Toggle();
         closeTimer.Tick += (_, _) =>
         {
             closeTimer.Stop();
@@ -63,7 +65,6 @@ internal sealed class CordWindow : GlassWindow
         Closed += (_, _) =>
         {
             closed = true;
-            openTimer.Stop();
             closeTimer.Stop();
             environmentTimer.Stop();
             Native.UnhookWinEvent(hook);
