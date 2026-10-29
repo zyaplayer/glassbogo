@@ -58,7 +58,6 @@ internal sealed class Relay(Action action) : ICommand
 internal sealed class WorkspaceWindow : GlassWindow
 {
     private readonly AppContext ctx;
-    private StackPanel? homeTasks;
     private DockPanel? entryPage; private readonly ContentControl content = new(); private string page = "home";
     private readonly TextBox search = new() { ToolTip = "搜索已收录的入口" }; private readonly ListBox entries = new() { SelectionMode = SelectionMode.Extended };
     private readonly ComboBox filter = new() { MinWidth = 130, Margin = new(5), DisplayMemberPath = "Name", SelectedValuePath = "Id" };
@@ -67,7 +66,7 @@ internal sealed class WorkspaceWindow : GlassWindow
     internal WorkspaceWindow(AppContext context)
     {
         ctx = context;
-        Title = "GlassBogo · 工作台";
+        Title = "GlassBogo · 管理";
         Width = 1000;
         Height = 700;
         MinWidth = 760;
@@ -75,7 +74,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel();
         var nav = new StackPanel();
-        foreach (var (key, label, iconName) in new[] { ("home", "工作台", "home"), ("entries", "全部入口", "folder"), ("calendar", "日历", "calendar"), ("plugins", "插件", "plugin"), ("settings", "设置", "settings") })
+        foreach (var (key, label, iconName) in new[] { ("home", "概览", "home"), ("entries", "全部入口", "folder"), ("calendar", "日历", "calendar"), ("plugins", "插件", "plugin"), ("settings", "设置", "settings") })
         {
             var button = Design.Button("", () => { if (key == "calendar") ctx.OpenCalendar(); else ShowPage(key); });
             var glyph = Design.Icon(iconName, 18);
@@ -162,7 +161,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         entries.PreviewMouseRightButtonDown += (_, _) => EntryMenu();
         ShowPage("home");
     }
-    private void OnData(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() => { if (page == "entries") { RefreshCategoryFilter(); RefreshEntries(); } else if (page == "home") RefreshToday(); });
+    private void OnData(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() => { if (page == "entries") { RefreshCategoryFilter(); RefreshEntries(); } else if (page == "home") Home(); });
     private void ShowPage(string target)
     {
         page = target;
@@ -186,26 +185,34 @@ internal sealed class WorkspaceWindow : GlassWindow
     }
     private void Home()
     {
+        var state = ctx.Db.Current;
         var panel = new StackPanel();
-        var eyebrow = Design.Text("你的桌面，一切就绪", 12, "Muted");
+        var eyebrow = Design.Text("管理", 12, "Muted");
         eyebrow.Margin = new(0, 8, 0, 12);
         panel.Children.Add(eyebrow);
-        var heading = Design.Text("留一点空间，\n给正在做的事。", 32);
+        var heading = Design.Text("入口、插件和设置，\n都收在这个窗口里。", 30);
         heading.FontWeight = FontWeights.SemiBold;
         heading.Margin = new(0, 0, 0, 12);
         panel.Children.Add(heading);
-        var description = Design.Text("把常用入口归在一起，随手展开，即刻开始。", 14, "Muted");
+        var description = Design.Text("日常使用留在桌面：底部细线放常用应用，顶部拉绳展开日历。这里只做整理和维护。", 14, "Muted");
         description.Margin = new(0, 0, 0, 20);
         panel.Children.Add(description);
-        var shortcuts = new WrapPanel { Margin = new(-4, 0, 0, 14) };
+        var shortcuts = new WrapPanel { Margin = new(-4, 0, 0, 16) };
         shortcuts.Children.Add(Design.Button("收纳桌面", () => HarvestFlow.Start(this, ctx)));
-        shortcuts.Children.Add(Design.Button("整理桌面入口", DiscoverDesktop));
+        shortcuts.Children.Add(Design.Button("全部入口", () => ShowPage("entries")));
         shortcuts.Children.Add(Design.AsyncButton("添加应用", () => PickApps()));
-        shortcuts.Children.Add(Design.Button("快速记一件事", () => CalendarWindow.EditTask(ctx, this, null, true)));
+        shortcuts.Children.Add(Design.Button("设置", () => ShowPage("settings")));
         panel.Children.Add(shortcuts);
-        homeTasks = new StackPanel();
-        panel.Children.Add(Design.Card(homeTasks));
-        RefreshToday();
+        var latest = ctx.Harvest.Latest();
+        var stats = new StackPanel();
+        stats.Children.Add(Design.Text($"{state.Entries.Count} 个入口 · {state.Categories.Count} 个分类 · {state.Entries.Count(e => e.CategoryId == "inbox")} 个待整理", 18));
+        var harvest = Design.Text(latest is null ? "还没有收纳过桌面。" : $"上次收纳 {latest.CreatedAt}：把 {latest.MovedCount} 项移到 {latest.ArchiveRoot}", 13, "Muted");
+        harvest.Margin = new(0, 6, 0, 0);
+        stats.Children.Add(harvest);
+        var icons = Design.Text(ctx.Desktop.HiddenByUs ? "桌面图标当前由 GlassBogo 隐藏，退出时自动恢复。" : "桌面图标当前可见。", 13, "Muted");
+        icons.Margin = new(0, 4, 0, 0);
+        stats.Children.Add(icons);
+        panel.Children.Add(Design.Card(stats));
         foreach (var plugin in ctx.Plugins.List().Where(p => p.Manifest is not null && ctx.Db.Current.Plugins.GetValueOrDefault(p.Manifest.Id)))
         {
             var m = plugin.Manifest!;
@@ -216,25 +223,6 @@ internal sealed class WorkspaceWindow : GlassWindow
         }
         panel.Children.Add(Design.Text("原文件始终留在原处。移除入口不会删除文件。", 12, "Muted"));
         content.Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-    }
-    private void RefreshToday()
-    {
-        var today = ctx.Calendar.Query(DateTime.Today.ToString("yyyy-MM-dd")).ToArray();
-        if (homeTasks is null)
-            return;
-        var daily = homeTasks;
-        daily.Children.Clear();
-        daily.Children.Add(Design.Text($"今天 · {DateTime.Today:MM月dd日}  /  {today.Count(t => !t.Completed)} 项待办", 18));
-        foreach (var task in today.Take(8))
-        {
-            var check = new CheckBox { Content = $"{task.Time}  {task.Title}", IsChecked = task.Completed };
-            check.Click += (_, _) => Design.Guard(() => ctx.Calendar.Save(task with { Completed = check.IsChecked == true }));
-            daily.Children.Add(check);
-        }
-        if (today.Length == 0)
-            daily.Children.Add(Design.Text("今天还没有安排。", 14, "Muted"));
-        daily.Children.Add(Design.Button("查看日历", ctx.OpenCalendar));
-
     }
     private void EntryPage()
     {
