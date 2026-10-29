@@ -75,9 +75,12 @@ internal static class Program
             var dock = new DockWindow(context);
             context.Dock = dock;
             dock.Show();
+            var cord = new CordWindow(context);
+            context.Cord = cord;
+            cord.Show();
             using var tray = new Tray(dock, () => context.OpenWorkspace(), context.OpenCalendar, context.Desktop.RestoreIcons, () => app.Shutdown());
             var activateWait = ThreadPool.RegisterWaitForSingleObject(activation, (_, _) => app.Dispatcher.BeginInvoke(() => context.OpenWorkspace()), null, Timeout.Infinite, false);
-            app.Exit += (_, _) => { activateWait.Unregister(null); context.Closing = true; };
+            app.Exit += (_, _) => { activateWait.Unregister(null); context.Closing = true; context.Cord?.Close(); };
             if (!context.Db.Current.Preferences.Onboarded)
                 dock.Dispatcher.BeginInvoke(() => context.OpenWorkspace(true), DispatcherPriority.ApplicationIdle);
             app.Run();
@@ -128,6 +131,7 @@ internal sealed class AppContext : IDisposable
         get;
     }
     internal DockWindow? Dock;
+    internal CordWindow? Cord;
     internal bool Closing;
     private WorkspaceWindow? workspace; private CalendarWindow? calendar;
     private DispatcherTimer? memoryTimer;

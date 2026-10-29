@@ -47,6 +47,13 @@ internal static class SelfTest
                     await dock.QaVerifyTransitions();
                     Log("popup interruption, latest-category switching, HWND reuse and dock tokens verified; " + dock.BackdropStatus);
                     dock.QaVerifyNavigation();
+                    var cord = new CordWindow(ctx);
+                    ctx.Cord = cord;
+                    cord.Show();
+                    await Task.Delay(300);
+                    cord.QaVerify();
+                    Log("calendar cord pulls a panel under the top edge and retracts");
+                    cord.Close();
                     ctx.LocateEntries([ctx.Db.Current.Entries[0]]);
                     await Task.Delay(300);
                     var located = Application.Current.Windows.OfType<WorkspaceWindow>().Single();
