@@ -3,6 +3,7 @@
 artifacts/
 .test-data/
 *.user
+.hermes/
 *.db*
 *.log
 Data/
