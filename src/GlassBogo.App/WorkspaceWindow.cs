@@ -62,6 +62,7 @@ internal sealed class WorkspaceWindow : GlassWindow
 {
     private readonly AppContext ctx;
     private DockPanel? entryPage; private readonly ContentControl content = new(); private string page = "home";
+    private TextBlock? homeCounts, homeHarvest, homeIcons;
     private readonly TextBox search = new() { ToolTip = "搜索已收录的入口" }; private readonly ListBox entries = new() { SelectionMode = SelectionMode.Extended };
     private readonly ComboBox filter = new() { MinWidth = 130, Margin = new(5), DisplayMemberPath = "Name", SelectedValuePath = "Id" };
     private readonly TextBlock status = Design.Text("", 12, "Muted");
@@ -172,7 +173,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         entries.PreviewMouseRightButtonDown += (_, _) => EntryMenu();
         ShowPage("home");
     }
-    private void OnData(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() => { if (page == "entries") { RefreshCategoryFilter(); RefreshEntries(); } else if (page == "home") Home(); });
+    private void OnData(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() => { if (page == "entries") { RefreshCategoryFilter(); RefreshEntries(); } else if (page == "home") RefreshHomeStats(); });
     private void ShowPage(string target)
     {
         page = target;
@@ -196,7 +197,6 @@ internal sealed class WorkspaceWindow : GlassWindow
     }
     private void Home()
     {
-        var state = ctx.Db.Current;
         var panel = new StackPanel();
         var eyebrow = Design.Text("管理", 12, "Muted");
         eyebrow.Margin = new(0, 8, 0, 12);
@@ -216,14 +216,16 @@ internal sealed class WorkspaceWindow : GlassWindow
         panel.Children.Add(shortcuts);
         var latest = ctx.Harvest.Latest();
         var stats = new StackPanel();
-        stats.Children.Add(Design.Text($"{state.Entries.Count} 个入口 · {state.Categories.Count} 个分类 · {state.Entries.Count(e => e.CategoryId == "inbox")} 个待整理", 18));
-        var harvest = Design.Text(latest is null ? "还没有收纳过桌面。" : $"上次收纳 {latest.CreatedAt}：把 {latest.MovedCount} 项移到 {latest.ArchiveRoot}", 13, "Muted");
-        harvest.Margin = new(0, 6, 0, 0);
-        stats.Children.Add(harvest);
-        var icons = Design.Text(ctx.Desktop.HiddenByUs ? "桌面图标当前由 GlassBogo 隐藏，退出时自动恢复。" : "桌面图标当前可见。", 13, "Muted");
-        icons.Margin = new(0, 4, 0, 0);
-        stats.Children.Add(icons);
+        homeCounts = Design.Text("", 18);
+        stats.Children.Add(homeCounts);
+        homeHarvest = Design.Text("", 13, "Muted");
+        homeHarvest.Margin = new(0, 6, 0, 0);
+        stats.Children.Add(homeHarvest);
+        homeIcons = Design.Text("", 13, "Muted");
+        homeIcons.Margin = new(0, 4, 0, 0);
+        stats.Children.Add(homeIcons);
         panel.Children.Add(Design.Card(stats));
+        RefreshHomeStats();
         foreach (var plugin in ctx.Plugins.List().Where(p => p.Manifest is not null && ctx.Db.Current.Plugins.GetValueOrDefault(p.Manifest.Id)))
         {
             var m = plugin.Manifest!;
@@ -234,6 +236,16 @@ internal sealed class WorkspaceWindow : GlassWindow
         }
         panel.Children.Add(Design.Text("原文件始终留在原处。移除入口不会删除文件。", 12, "Muted"));
         content.Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+    private void RefreshHomeStats()
+    {
+        if (homeCounts is null || homeHarvest is null || homeIcons is null)
+            return;
+        var state = ctx.Db.Current;
+        var latest = ctx.Harvest.Latest();
+        homeCounts.Text = $"{state.Entries.Count} 个入口 · {state.Categories.Count} 个分类 · {state.Entries.Count(e => e.CategoryId == "inbox")} 个待整理";
+        homeHarvest.Text = latest is null ? "还没有收纳过桌面。" : $"上次收纳 {latest.CreatedAt}：把 {latest.MovedCount} 项移到 {latest.ArchiveRoot}";
+        homeIcons.Text = ctx.Desktop.HiddenByUs ? "桌面图标当前由 GlassBogo 隐藏，退出时自动恢复。" : "桌面图标当前可见。";
     }
     private void EntryPage()
     {

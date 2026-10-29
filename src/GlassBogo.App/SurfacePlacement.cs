@@ -22,10 +22,12 @@ internal static class SurfacePlacement
         return new(left, top, left + width, top + height);
     }
 
-    internal static PixelRect Popup(PixelRect work, double scale, PixelRect dock)
+    internal static PixelRect Popup(PixelRect work, double scale, PixelRect dock) => Popup(work, scale, dock, 472, 396);
+
+    internal static PixelRect Popup(PixelRect work, double scale, PixelRect dock, double widthDip, double heightDip)
     {
-        var width = Math.Min(work.Width, Pixels(472, scale));
-        var height = Math.Min(work.Height, Pixels(396, scale));
+        var width = Math.Min(work.Width, Pixels(widthDip, scale));
+        var height = Math.Min(work.Height, Pixels(heightDip, scale));
         var left = Math.Clamp(dock.Left + (dock.Width - width) / 2, work.Left, work.Right - width);
         var top = Math.Clamp(dock.Top - height - Pixels(8, scale), work.Top, work.Bottom - height);
         return new(left, top, left + width, top + height);

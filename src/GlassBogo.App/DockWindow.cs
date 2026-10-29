@@ -23,7 +23,7 @@ internal sealed class DockWindow : GlassWindow
     private readonly Border selection = new() { Width = 80, Height = 72, CornerRadius = new(16), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new(4, 0, 0, 0), IsHitTestVisible = false, Visibility = Visibility.Hidden };
     private readonly TranslateTransform selectionShift = new();
     private Category? pending, active; private Button? anchor; private int page;
-    private Point dragStart; private string? dragCategory;
+    private bool gridMode; private Button? gridAnchor; private Button[] gridButtons = [];
     private nint hook; private nint locationHook; private readonly Native.WinEventProc foregroundCallback;
     private HwndSource? source; private bool collapsed; private readonly Button discoveries;
     private bool disposed;
@@ -129,12 +129,12 @@ internal sealed class DockWindow : GlassWindow
             foreach (var key in popupPages.Keys.Where(key => affected.Any(id => key.StartsWith(id + ":", StringComparison.Ordinal))).ToArray()) popupPages.Remove(key);
             Render();
             var category = next.Categories.FirstOrDefault(c => c.Id == selectedId);
-            if (wasVisible && category is not null)
+            if (wasVisible && gridMode)
+                ShowGrid();
+            else if (wasVisible && category is not null)
             {
                 active = category;
-                anchor = (Button)strip.Children[next.Categories.IndexOf(category)];
                 DrawPopup();
-                UpdateSelection(anchor);
             }
             else HidePopup();
         }
@@ -190,70 +190,79 @@ internal sealed class DockWindow : GlassWindow
     {
         openTimer.Stop();
         pending = null;
-        var oldPositions = strip.Children.OfType<Button>().Where(b => b.DataContext is Category)
-            .ToDictionary(b => ((Category)b.DataContext).Id, b => b.TranslatePoint(new Point(), strip).X);
         strip.Children.Clear();
         selection.Visibility = Visibility.Hidden;
-        foreach (var cat in ctx.Db.Current.Categories)
+        var categories = new Button
         {
-            var panel = new StackPanel();
-            var mini = new UniformGrid { Columns = 2, Rows = 2, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 0, 0, 4) };
-            var entries = ctx.Db.Current.Entries.Where(e => e.CategoryId == cat.Id).Take(4).ToArray();
-            if (entries.Length == 0)
-                mini.Children.Add(Design.Icon("folder", 20));
-            else
-                foreach (var entry in entries)
-                {
-                    var icon = new Image { Width = 18, Height = 18, Margin = new(1) };
-                    mini.Children.Add(icon);
-                    _ = SetIcon(icon, entry);
-                }
-            panel.Children.Add(mini);
-            var label = Design.Text(cat.Name, 12);
-            label.TextTrimming = TextTrimming.CharacterEllipsis;
-            label.TextWrapping = TextWrapping.NoWrap;
-            label.HorizontalAlignment = HorizontalAlignment.Center;
-            label.FontWeight = FontWeights.Medium;
-            label.SetBinding(TextBlock.ForegroundProperty, new System.Windows.Data.Binding("Foreground") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(Button), 1) });
-            panel.Children.Add(label);
-            var button = new Button { Content = panel, DataContext = cat, Width = 80, Height = 72, Padding = new(4), Margin = new(4, 0, 4, 0), ToolTip = cat.Name, AllowDrop = true };
+            Content = Tile(Design.Icon("folder", 20), "分类", ctx.Db.Current.Categories.Count + " 类"),
+            Width = 76,
+            Height = 72,
+            Padding = new(4),
+            Margin = new(4, 0, 4, 0),
+            ToolTip = "全部分类"
+        };
+        categories.SetResourceReference(StyleProperty, "CategoryButton");
+        System.Windows.Automation.AutomationProperties.SetName(categories, "全部分类");
+        categories.MouseEnter += (_, _) => ResumePopup();
+        categories.MouseLeave += (_, _) => ScheduleClose();
+        categories.Click += (_, _) => { ShowGrid(true); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
+        gridAnchor = categories;
+        strip.Children.Add(categories);
+        foreach (var entry in ctx.Catalog.Pinned())
+        {
+            var image = new Image { Width = 40, Height = 40, Margin = new(0, 0, 0, 6) };
+            RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+            _ = SetIcon(image, entry);
+            var button = new Button { Content = Tile(image, entry.Name, null), DataContext = entry, Width = 76, Height = 72, Padding = new(4), Margin = new(4, 0, 4, 0), ToolTip = entry.Target };
             button.SetResourceReference(StyleProperty, "CategoryButton");
-            if (oldPositions.TryGetValue(cat.Id, out var oldX))
-                button.Loaded += (_, _) =>
-                {
-                    if (button.RenderTransform is TransformGroup group && group.Children.OfType<TranslateTransform>().FirstOrDefault() is { } shift)
-                    { shift.X = oldX - button.TranslatePoint(new Point(), strip).X; Design.Animate(shift, TranslateTransform.XProperty, 0, 180); }
-                };
-            System.Windows.Automation.AutomationProperties.SetName(button, cat.Name);
-            button.MouseEnter += (_, _) => QueueCategory(cat, button);
-            button.MouseLeave += (_, _) => { hover.Leave(cat.Id); if (pending?.Id == cat.Id) { pending = null; openTimer.Stop(); } ScheduleClose(); };
-            button.Click += (_, _) => { ShowCategory(cat, button, true); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
-            button.PreviewMouseLeftButtonDown += (_, e) => { dragStart = e.GetPosition(this); dragCategory = cat.Id; };
-            button.PreviewMouseMove += (_, e) => { if (e.LeftButton != MouseButtonState.Pressed || dragCategory != cat.Id || (e.GetPosition(this) - dragStart).Length < 8) return; var hold = hover.Hold(HoldReason.Dragging); try { DragDrop.DoDragDrop(button, new DataObject("GlassBogo.Category", cat.Id), DragDropEffects.Move); } finally { hold.Dispose(); dragCategory = null; ScheduleClose(); } };
-            TrackExternalDrag(button);
-            button.DragEnter += (_, _) => QueueCategory(cat, button, true);
-            button.DragLeave += (_, _) => { hover.Leave(cat.Id); openTimer.Stop(); };
-            button.DragOver += (_, e) => { closeTimer.Stop(); e.Effects = e.Data.GetDataPresent("GlassBogo.Category") || e.Data.GetDataPresent("GlassBogo.Entry") ? DragDropEffects.Move : DragDropEffects.Link; e.Handled = true; };
-            button.Drop += async (_, e) => { e.Handled = true; var hold = hover.Hold(HoldReason.OLEDrag); try { if (e.Data.GetData("GlassBogo.Category") is string id) ctx.Catalog.ReorderCategory(id, cat.Id); else await ImportDrop(e.Data, cat.Id); } catch (Exception ex) { Design.Error(ex); } finally { hold.Dispose(); ScheduleClose(); } };
+            System.Windows.Automation.AutomationProperties.SetName(button, entry.Name);
+            button.MouseEnter += (_, _) => ResumePopup();
+            button.Click += async (_, _) => { HidePopup(); SetCollapsed(true); await ctx.Open(entry); };
             var menu = new ContextMenu();
-            if (cat.Id != "inbox")
-            {
-                AddMenu(menu, "重命名", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "分类名称", cat.Name, name => ctx.Catalog.SaveCategory(cat.Id, name)); } finally { hold.Dispose(); ScheduleClose(); } });
-                AddMenu(menu, "移除分类（入口回到待整理）", () => ctx.Catalog.RemoveCategory(cat.Id));
-            }
-            AddMenu(menu, "添加入口", () => ctx.OpenWorkspace(true));
+            AddMenu(menu, "取消钉住", () => ctx.Catalog.SetPinned([entry.Id], false));
+            AddMenu(menu, "归类到…", () => { HidePopup(); ctx.OpenWorkspace(); });
+            AddMenu(menu, "移除入口（保留原文件）", () => ctx.Catalog.Remove([entry.Id]));
             TrackMenu(menu);
             button.ContextMenu = menu;
+            _ = MarkUnavailable(button, entry);
             strip.Children.Add(button);
         }
-        var add = Design.Button("＋ 分类", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "新建分类", save: name => ctx.Catalog.SaveCategory(null, name)); } finally { hold.Dispose(); ScheduleClose(); } });
+        var add = Design.Button("＋ 钉住", () => { HidePopup(); ctx.OpenWorkspace(); });
         add.Width = 76;
-        add.ToolTip = "新建分类";
+        add.Height = 72;
         add.Padding = new(8);
+        add.Margin = new(4, 0, 4, 0);
+        add.ToolTip = "在工作台里挑选要钉住到这里的入口";
         add.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
         add.VerticalAlignment = VerticalAlignment.Center;
         strip.Children.Add(add);
         PositionDock();
+        if (popup.IsVisible)
+        {
+            if (gridMode)
+                ShowGrid();
+            else if (active is not null)
+                DrawPopup();
+        }
+    }
+    private static StackPanel Tile(UIElement icon, string name, string? hint)
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(icon);
+        var label = Design.Text(name, 12);
+        label.TextTrimming = TextTrimming.CharacterEllipsis;
+        label.TextWrapping = TextWrapping.NoWrap;
+        label.HorizontalAlignment = HorizontalAlignment.Center;
+        label.FontWeight = FontWeights.Medium;
+        label.SetBinding(TextBlock.ForegroundProperty, new System.Windows.Data.Binding("Foreground") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(Button), 1) });
+        panel.Children.Add(label);
+        if (hint is not null)
+        {
+            var muted = Design.Text(hint, 10, "Muted");
+            muted.HorizontalAlignment = HorizontalAlignment.Center;
+            panel.Children.Add(muted);
+        }
+        return panel;
     }
     private async Task SetIcon(Image image, Entry entry)
     {
@@ -277,9 +286,10 @@ internal sealed class DockWindow : GlassWindow
     private void UpdateSelection(Button button)
     {
         foreach (var tile in strip.Children.OfType<Button>()) tile.Tag = ReferenceEquals(tile, button) ? "active" : null;
-        var x = strip.Children.IndexOf(button) * 88d;
+        var x = Math.Max(0, button.TranslatePoint(new Point(), strip).X - 4);
         if (selection.Visibility != Visibility.Visible) selectionShift.X = x;
         selection.Visibility = Visibility.Visible;
+        selection.Width = Math.Max(48, button.ActualWidth > 0 ? button.ActualWidth : button.Width);
         Design.Animate(selectionShift, TranslateTransform.XProperty, x, 90);
     }
     private void ShowCategory(Category category, Button button, bool clicked = false)
@@ -290,31 +300,127 @@ internal sealed class DockWindow : GlassWindow
         var fresh = !popup.IsVisible;
         var changed = hover.Open(category.Id);
         var generation = hover.Generation;
-        if (!changed && !fresh)
+        if (!changed && !fresh && !gridMode)
         {
             if (wasClosing) popupMotion.Open(false, 140, () => hover.Opened(generation));
             else hover.Opened(generation);
             return;
         }
+        gridMode = false;
         active = category;
-        UpdateSelection(button);
-        anchor = button;
+        anchor = strip.Children.Contains(button) ? button : gridAnchor;
+        if (strip.Children.Contains(button))
+            UpdateSelection(button);
         page = 0;
         DrawPopup(!fresh && !wasClosing);
+        Present(fresh, wasClosing, clicked, generation);
+    }
+    private void ShowGrid(bool clicked = false)
+    {
+        openTimer.Stop();
+        closeTimer.Stop();
+        var wasClosing = hover.Phase == HoverPhase.Closing;
+        var fresh = !popup.IsVisible;
+        var changed = hover.Open("__grid");
+        var generation = hover.Generation;
+        if (!changed && !fresh && gridMode)
+        {
+            if (wasClosing) popupMotion.Open(false, 140, () => hover.Opened(generation));
+            return;
+        }
+        gridMode = true;
+        active = null;
+        if (gridAnchor is not null)
+        {
+            anchor = gridAnchor;
+            UpdateSelection(gridAnchor);
+        }
+        popup.SetBody(BuildGrid(), !fresh);
+        Present(fresh, wasClosing, clicked, generation, 640, 420);
+    }
+    private UIElement BuildGrid()
+    {
+        var layout = new DockPanel { MinWidth = 400, MinHeight = 362 };
+        var header = new DockPanel { Height = 48, LastChildFill = true };
+        var manage = Design.IconButton("settings", "管理入口", () => { HidePopup(); ctx.OpenWorkspace(); });
+        manage.Width = manage.Height = 36;
+        DockPanel.SetDock(manage, Dock.Right);
+        header.Children.Add(manage);
+        var title = Design.Text($"全部分类  ·  {ctx.Db.Current.Categories.Count}", 18);
+        title.FontWeight = FontWeights.SemiBold;
+        title.Margin = new(6, 0, 4, 0);
+        header.Children.Add(title);
+        DockPanel.SetDock(header, Dock.Top);
+        layout.Children.Add(header);
+        var footer = Design.Row(
+            Design.Text("点分类看入口；右键可重命名或移除。", 12, "Muted"),
+            Design.Button("新建分类", () => { HidePopup(); ctx.OpenWorkspace(); }));
+        footer.Height = 44;
+        DockPanel.SetDock(footer, Dock.Bottom);
+        layout.Children.Add(footer);
+        var grid = new UniformGrid { Columns = 4 };
+        var buttons = new List<Button>();
+        foreach (var cat in ctx.Db.Current.Categories)
+        {
+            var entries = ctx.Db.Current.Entries.Where(e => e.CategoryId == cat.Id).ToArray();
+            var panel = new StackPanel();
+            var mini = new UniformGrid { Columns = 2, Rows = 2, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 0, 0, 4) };
+            if (entries.Length == 0)
+                mini.Children.Add(Design.Icon("folder", 20));
+            else
+                foreach (var entry in entries.Take(4))
+                {
+                    var icon = new Image { Width = 18, Height = 18, Margin = new(1) };
+                    RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
+                    mini.Children.Add(icon);
+                    _ = SetIcon(icon, entry);
+                }
+            panel.Children.Add(mini);
+            var label = Design.Text(cat.Name, 12);
+            label.TextTrimming = TextTrimming.CharacterEllipsis;
+            label.TextWrapping = TextWrapping.NoWrap;
+            label.HorizontalAlignment = HorizontalAlignment.Center;
+            label.FontWeight = FontWeights.Medium;
+            panel.Children.Add(label);
+            var count = Design.Text($"{entries.Length} 项", 10, "Muted");
+            count.HorizontalAlignment = HorizontalAlignment.Center;
+            panel.Children.Add(count);
+            var button = new Button { Content = panel, DataContext = cat, Width = 92, Height = 80, Padding = new(4), Margin = new(4), ToolTip = cat.Name, AllowDrop = true };
+            button.SetResourceReference(StyleProperty, "CategoryButton");
+            System.Windows.Automation.AutomationProperties.SetName(button, cat.Name + " " + entries.Length);
+            button.Click += (_, _) => { ShowCategory(cat, button, true); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
+            var menu = new ContextMenu();
+            if (cat.Id != "inbox")
+            {
+                AddMenu(menu, "重命名", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "分类名称", cat.Name, name => ctx.Catalog.SaveCategory(cat.Id, name)); } finally { hold.Dispose(); ScheduleClose(); } });
+                AddMenu(menu, "移除分类（入口回到待整理）", () => ctx.Catalog.RemoveCategory(cat.Id));
+            }
+            AddMenu(menu, "添加入口", () => ctx.OpenWorkspace(true));
+            TrackMenu(menu);
+            button.ContextMenu = menu;
+            TrackExternalDrag(button);
+            button.Drop += async (_, e) => { e.Handled = true; var hold = hover.Hold(HoldReason.OLEDrag); try { await ImportDrop(e.Data, cat.Id); } catch (Exception ex) { Design.Error(ex); } finally { hold.Dispose(); ScheduleClose(); } };
+            grid.Children.Add(button);
+            buttons.Add(button);
+        }
+        visibleEntries = gridButtons = buttons.ToArray();
+        layout.Children.Add(new ScrollViewer { Content = grid, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        return layout;
+    }
+    private void Present(bool fresh, bool wasClosing, bool clicked, int generation, double widthDip = 472, double heightDip = 396)
+    {
         var screen = Display.FromHandle(new WindowInteropHelper(this).Handle);
         var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
         // A stable panel position avoids chasing a moving window while switching groups.
         var pos = PointToScreen(new Point());
         var placement = SurfacePlacement.Popup(screen.WorkingArea, scale,
-            new((int)pos.X, (int)pos.Y, (int)(pos.X + ActualWidth * scale), (int)(pos.Y + ActualHeight * scale)));
+            new((int)pos.X, (int)pos.Y, (int)(pos.X + ActualWidth * scale), (int)(pos.Y + ActualHeight * scale)), widthDip, heightDip);
         popup.Width = placement.Width / scale;
         popup.Height = placement.Height / scale;
         popup.Left = placement.Left / scale;
         popup.Top = placement.Top / scale;
         if (!popup.IsVisible)
-        {
             popup.Show();
-        }
         if (fresh || wasClosing) popupMotion.Open(fresh, clicked ? 140 : 150, () => hover.Opened(generation));
         else hover.Opened(generation);
         Native.SetWindowPos(new WindowInteropHelper(popup).Handle, 0, placement.Left, placement.Top, placement.Width, placement.Height, 0x14);
@@ -347,7 +453,7 @@ internal sealed class DockWindow : GlassWindow
         header.Children.Add(title);
         DockPanel.SetDock(header, Dock.Top);
         layout.Children.Add(header);
-        var footer = Design.Row(Design.Button("‹", () => { page = Math.Max(0, page - 1); DrawPopup(); }), Design.Text($"{page + 1} / {pages} · {entries.Length} 个入口", 12, "Muted"), Design.Button("›", () => { page = Math.Min(pages - 1, page + 1); DrawPopup(); }), Design.Button("管理", () => { HidePopup(); ctx.OpenWorkspace(); }));
+        var footer = Design.Row(Design.Button("‹ 分类", () => ShowGrid()), Design.Button("‹", () => { page = Math.Max(0, page - 1); DrawPopup(); }), Design.Text($"{page + 1} / {pages} · {entries.Length} 个入口", 12, "Muted"), Design.Button("›", () => { page = Math.Min(pages - 1, page + 1); DrawPopup(); }), Design.Button("管理", () => { HidePopup(); ctx.OpenWorkspace(); }));
         footer.Height = 44;
         DockPanel.SetDock(footer, Dock.Bottom);
         layout.Children.Add(footer);
@@ -636,17 +742,28 @@ internal sealed class DockWindow : GlassWindow
             PositionDock();
         }
     }
-    internal void QaVerifyIcons()
+    internal async Task QaVerifyIcons()
     {
-        var icons = strip.Children.OfType<Button>().Select(b => b.Content).OfType<StackPanel>().SelectMany(s => s.Children.OfType<UniformGrid>()).SelectMany(g => g.Children.OfType<Image>()).ToArray();
-        if (icons.Length == 0 || icons.Any(i => i.Source is null))
+        if (!strip.Children.OfType<Button>().Any(b => (b.ToolTip as string) == "全部分类"))
+            throw new InvalidOperationException("Dock 缺少分类按钮。");
+        ShowGrid();
+        if (!popup.IsVisible || gridButtons.Length != ctx.Db.Current.Categories.Count)
+            throw new InvalidOperationException("分类网格未生成。");
+        // 网格图标是异步加载的，等它们落到 Image.Source 再断言。
+        await Task.Delay(800);
+        var previews = gridButtons.SelectMany(b => (b.Content as Panel)?.Children.OfType<UniformGrid>() ?? [])
+            .SelectMany(g => g.Children.OfType<Image>()).ToArray();
+        if (previews.Length == 0 || previews.Any(i => i.Source is null))
             throw new InvalidOperationException("分类预览图标未加载。");
+        HidePopup();
     }
     internal void QaVerifyNavigation()
     {
         var category = ctx.Db.Current.Categories.First(c => ctx.Db.Current.Entries.Count(e => e.CategoryId == c.Id) > 12);
-        var index = ctx.Db.Current.Categories.IndexOf(category);
-        ShowCategory(category, (Button)strip.Children[index]);
+        ShowGrid();
+        var tile = gridButtons.FirstOrDefault(b => b.DataContext is Category c && c.Id == category.Id)
+            ?? throw new InvalidOperationException("分类网格缺少该分类。");
+        ShowCategory(category, tile, true);
         var first = visibleEntries[0];
         ChangePage(1);
         if (page != 1 || ReferenceEquals(first, visibleEntries[0]))
@@ -664,8 +781,9 @@ internal sealed class DockWindow : GlassWindow
     }
     internal async Task QaVerifyTransitions()
     {
+        ShowGrid();
         var cat = ctx.Db.Current.Categories[1];
-        var button = (Button)strip.Children[1];
+        var button = gridButtons.First(b => b.DataContext is Category c && c.Id == cat.Id);
         ShowCategory(cat, button);
         await Task.Delay(180);
         var handle = new WindowInteropHelper(popup).Handle;
@@ -693,7 +811,7 @@ internal sealed class DockWindow : GlassWindow
         if (handle != new WindowInteropHelper(popup).Handle || popup.SurfaceRoot.HasAnimatedProperties ||
             ((TranslateTransform)popup.SurfaceRoot.RenderTransform).HasAnimatedProperties)
             throw new InvalidOperationException("分类切换没有复用窗口或动画时钟未释放。");
-        if (Width > Screen().WorkingArea.Width / Screen().Scale * .7 + 1 || button.Width != 80 || button.Height != 72)
+        if (Width > Screen().WorkingArea.Width / Screen().Scale * .7 + 1 || button.Width != 92 || button.Height != 80)
             throw new InvalidOperationException("Dock 尺寸不符合规范。");
         HidePopup();
     }
@@ -717,7 +835,10 @@ internal sealed class DockWindow : GlassWindow
         var cats = ctx.Db.Current.Categories;
         var at = index % cats.Count;
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        ShowCategory(cats[at], (Button)strip.Children[at]);
+        if (gridButtons.Length == 0)
+            ShowGrid();
+        var tile = gridButtons.FirstOrDefault(b => b.DataContext is Category c && c.Id == cats[at].Id) ?? gridAnchor;
+        ShowCategory(cats[at], tile!);
         popup.UpdateLayout();
         return watch.Elapsed.TotalMilliseconds;
     }

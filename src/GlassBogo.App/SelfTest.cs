@@ -29,7 +29,7 @@ internal static class SelfTest
                 try
                 {
                     await Task.Delay(1500);
-                    dock.QaVerifyIcons();
+                    await dock.QaVerifyIcons();
                     Log("dock loaded; preview icons verified");
                     var motionButton = Walk(dock).OfType<Button>().First();
                     motionButton.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = Mouse.PreviewMouseDownEvent });
