@@ -61,11 +61,14 @@ public sealed class DesktopHarvest
         {
             if (!File.Exists(source) && !Directory.Exists(source))
                 continue;
-            if (Path.GetFileName(source).Equals("desktop.ini", StringComparison.OrdinalIgnoreCase))
+            var name = Path.GetFileName(source);
+            if (name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase))
+                continue;
+            // Office 临时锁文件（~$xxx.docx）正在被占用；归档/备份夹本身也不该再被收进去。
+            if (name.StartsWith("~$", StringComparison.Ordinal) || name.StartsWith("GlassBogo-归档-", StringComparison.OrdinalIgnoreCase))
                 continue;
             if (IsInside(source, root))
                 continue;
-            var name = Path.GetFileName(source);
             items.Add(new HarvestItem(name, source, Unique(root, name, used), HarvestKind.Of(source)));
         }
         return new HarvestPlan(root, NewId(now), now.ToString("yyyy-MM-dd HH:mm:ss"), items);
