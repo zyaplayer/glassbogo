@@ -50,8 +50,8 @@ internal static class Native
     private static extern void SHCreateItemFromParsingName(string path, nint bindContext, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory factory);
     [DllImport("gdi32.dll")]
     private static extern bool DeleteObject(nint handle);
-    // 128px 覆盖 44 DIP 在 200% 缩放下的显示；SHGetFileInfo 的大图标只有 32px，放大必然模糊。
-    private const int IconPixels = 128;
+    // 256px 覆盖 40 DIP 图标在 300% 缩放下的显示；SHGetFileInfo 回退只有 16/32px，放大必然模糊。
+    private const int IconPixels = 256;
     internal static ImageSource? GetIcon(string target) => TryShellImage(target) ?? TryShellIcon(target);
     private static ImageSource? TryShellImage(string target)
     {
@@ -78,7 +78,7 @@ internal static class Native
     private static ImageSource? TryShellIcon(string target)
     {
         var info = new ShellInfo();
-        if (SHGetFileInfo(target, 0, ref info, (uint)Marshal.SizeOf<ShellInfo>(), 0x100 | 0x1) == 0 || info.Icon == 0)
+        if (SHGetFileInfo(target, 0, ref info, (uint)Marshal.SizeOf<ShellInfo>(), 0x100) == 0 || info.Icon == 0)
             return null;
         try
         {

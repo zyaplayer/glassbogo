@@ -198,7 +198,7 @@ internal sealed class DockWindow : GlassWindow
         selection.Visibility = Visibility.Hidden;
         var categories = new Button
         {
-            Content = Tile(Design.Icon("folder", 20), "分类", ctx.Db.Current.Categories.Count + " 类"),
+            Content = Tile(Design.Icon("folder", 20), "收纳", ctx.Db.Current.Categories.Count + " 个"),
             Width = 76,
             Height = 72,
             Padding = new(4),
@@ -211,7 +211,6 @@ internal sealed class DockWindow : GlassWindow
         categories.MouseLeave += (_, _) => ScheduleClose();
         categories.Click += (_, _) => { ShowGrid(true); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
         gridAnchor = categories;
-        strip.Children.Add(categories);
         foreach (var entry in ctx.Catalog.Pinned())
         {
             var image = new Image { Width = 40, Height = 40, Margin = new(0, 0, 0, 6) };
@@ -231,15 +230,35 @@ internal sealed class DockWindow : GlassWindow
             _ = MarkUnavailable(button, entry);
             strip.Children.Add(button);
         }
-        var add = Design.Button("＋ 钉住", () => { HidePopup(); ctx.OpenWorkspace(); });
+        var plusMenu = new ContextMenu();
+        AddMenu(plusMenu, "钉住常用应用", () => { HidePopup(); ctx.OpenWorkspace(true); });
+        AddMenu(plusMenu, "新建应用收纳", () =>
+        {
+            var hold = hover.Hold(HoldReason.Editing);
+            try { Design.Prompt(this, "新建应用收纳", "", name => { ctx.Catalog.SaveCategory(null, name); ShowGrid(); }); }
+            finally { hold.Dispose(); ScheduleClose(); }
+        });
+        TrackMenu(plusMenu);
+        var add = new Button { Content = "＋", ToolTip = "钉住常用应用 / 新建应用收纳" };
+        add.Click += (_, _) => { plusMenu.PlacementTarget = add; plusMenu.Placement = PlacementMode.Top; plusMenu.IsOpen = true; };
         add.Width = 76;
         add.Height = 72;
         add.Padding = new(8);
         add.Margin = new(4, 0, 4, 0);
-        add.ToolTip = "在工作台里挑选要钉住到这里的入口";
+        add.ToolTip = "钉住常用应用 / 新建应用收纳";
         add.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
         add.VerticalAlignment = VerticalAlignment.Center;
+        // 底部栏顺序：常用应用 → 应用收纳 → ＋ → 工作台 → 日历
+        strip.Children.Add(categories);
         strip.Children.Add(add);
+        var workspaceButton = new Button { Content = "工作台", ToolTip = "管理入口、分类与设置", Width = 76, Height = 72, Padding = new(8), Margin = new(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+        workspaceButton.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
+        workspaceButton.Click += (_, _) => { HidePopup(); ctx.OpenWorkspace(); };
+        strip.Children.Add(workspaceButton);
+        var calendarButton = new Button { Content = "日历", ToolTip = "打开日历", Width = 76, Height = 72, Padding = new(8), Margin = new(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+        calendarButton.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
+        calendarButton.Click += (_, _) => { HidePopup(); SetCollapsed(true); ctx.OpenCalendar(); };
+        strip.Children.Add(calendarButton);
         PositionDock();
         if (popup.IsVisible)
         {
