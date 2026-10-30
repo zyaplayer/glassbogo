@@ -28,7 +28,7 @@ internal sealed class DockWindow : GlassWindow
     private nint hook; private nint locationHook; private readonly Native.WinEventProc foregroundCallback;
     private HwndSource? source; private bool collapsed; private readonly Button discoveries;
     private bool disposed;
-    private readonly Grid line;
+    private readonly Grid pillBody;
     private readonly ScaleTransform handleScale;
     private readonly Border handlePill;
     private FrameworkElement? bodyPanel;
@@ -84,11 +84,11 @@ internal sealed class DockWindow : GlassWindow
         var scroller = new ScrollViewer { Content = categoryLayer, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
         scroller.PreviewMouseWheel += (_, e) => { scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - e.Delta); e.Handled = true; };
         body.Children.Add(scroller);
-        line = HandleVisual.Create(104, 9, out handleScale, out handlePill);
-        line.Visibility = Visibility.Collapsed;
+        pillBody = (Grid)HandleVisual.Fill(out handleScale, out handlePill);
+        pillBody.Visibility = Visibility.Collapsed;
         var shell = new Grid();
         shell.Children.Add(body);
-        shell.Children.Add(line);
+        shell.Children.Add(pillBody);
         bodyPanel = body;
         SetBody(shell);
         openTimer.Tick += (_, _) => { openTimer.Stop(); if (pending is not null && anchor is not null && hover.Pending == pending.Id) ShowCategory(pending, anchor); };
@@ -799,9 +799,12 @@ internal sealed class DockWindow : GlassWindow
         collapsed = value;
         if (bodyPanel is not null)
             bodyPanel.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
-        line.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-        SetInsets(value ? 0 : 8);
-        SetSurfaceHidden(value);
+        pillBody.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        SetInsets(value ? 3 : 8);
+        SetRadius(value ? 11 : 24);
+        // 胶囊比默认最小尺寸小，收起态要放开 MinWidth/MinHeight，否则窗口会被撑大。
+        MinWidth = value ? 0 : 220;
+        MinHeight = value ? 0 : 70;
         if (value)
             HidePopup();
         PositionDock();
@@ -828,11 +831,11 @@ internal sealed class DockWindow : GlassWindow
         PixelRect placement;
         if (collapsed)
         {
-            // 收起态只是一条带抓握点的细胶囊：窗口保留热区，材质隐藏。
-            var width = (int)Math.Round(280 * scale);
-            var height = (int)Math.Round(26 * scale);
+            // 收起态窗口本身就是这颗玻璃胶囊，不再隐藏材质（隐藏材质会让客户区画成黑块）。
+            var width = (int)Math.Round(150 * scale);
+            var height = (int)Math.Round(34 * scale);
             var left = work.Left + (work.Width - width) / 2;
-            var top = Math.Max(work.Top, work.Bottom - height - (int)Math.Round(8 * scale));
+            var top = Math.Max(work.Top, work.Bottom - height - (int)Math.Round(6 * scale));
             placement = new(left, top, left + width, top + height);
         }
         else

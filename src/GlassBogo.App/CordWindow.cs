@@ -11,13 +11,12 @@ namespace GlassBogo.App;
 /// </summary>
 internal sealed class CordWindow : GlassWindow
 {
-    private const double HotWidth = 260;
-    private const double HotHeight = 22;
+    private const double HotWidth = 120;
+    private const double HotHeight = 32;
 
     private readonly AppContext ctx;
     private readonly DispatcherTimer closeTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly DispatcherTimer environmentTimer = new() { Interval = TimeSpan.FromMilliseconds(140) };
-    private readonly Grid line;
     private readonly ScaleTransform handleScale;
     private readonly Border handlePill;
     private readonly Native.WinEventProc foregroundCallback;
@@ -34,10 +33,10 @@ internal sealed class CordWindow : GlassWindow
         ShowActivated = false;
         ResizeMode = ResizeMode.NoResize;
         MinHeight = 0;
-        SetInsets(0);
-        line = HandleVisual.Create(72, 9, out handleScale, out handlePill);
-        SetBody(line);
-        SetSurfaceHidden(true);
+        MinWidth = 0;
+        SetInsets(3);
+        SetRadius(11);
+        SetBody(HandleVisual.Fill(out handleScale, out handlePill));
         MouseEnter += (_, _) => { HandleVisual.Hover(handleScale, handlePill, true); closeTimer.Stop(); };
         MouseLeave += (_, _) => { HandleVisual.Hover(handleScale, handlePill, false); ScheduleClose(); };
         // 点击拉出/收回，悬停只提亮：不再靠 120ms 悬停定时器自动弹开。
