@@ -362,7 +362,19 @@ internal sealed class DockWindow : GlassWindow
 
         var footer = Design.Row(
             Design.Text("点分类看入口；输入即搜入口和归档文件。", 12, "Muted"),
-            Design.Button("新建分类", () => { HidePopup(); ctx.OpenWorkspace(); }));
+            Design.Button("＋ 新建分类", () =>
+            {
+                var hold = hover.Hold(HoldReason.Editing);
+                try
+                {
+                    Design.Prompt(this, "新建分类", "", name =>
+                    {
+                        ctx.Catalog.SaveCategory(null, name);
+                        ShowGrid();
+                    });
+                }
+                finally { hold.Dispose(); ScheduleClose(); }
+            }));
         footer.Height = 44;
         DockPanel.SetDock(footer, Dock.Bottom);
         layout.Children.Add(footer);
