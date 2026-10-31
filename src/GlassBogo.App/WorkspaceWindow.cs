@@ -61,7 +61,7 @@ internal sealed class Relay(Action action) : ICommand
 internal sealed class WorkspaceWindow : GlassWindow
 {
     private readonly AppContext ctx;
-    private DockPanel? entryPage; private readonly ContentControl content = new(); private string page = "home";
+    private DockPanel? entryPage; private readonly ContentControl content = new(); private string page = "entries";
     private TextBlock? homeCounts, homeHarvest, homeIcons;
     private readonly TextBox search = new() { ToolTip = "搜索已收录的入口" }; private readonly ListBox entries = new() { SelectionMode = SelectionMode.Extended };
     private readonly ComboBox filter = new() { MinWidth = 130, Margin = new(5), DisplayMemberPath = "Name", SelectedValuePath = "Id" };
@@ -78,7 +78,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel();
         var nav = new StackPanel();
-        foreach (var (key, label, iconName) in new[] { ("home", "概览", "home"), ("entries", "全部入口", "folder"), ("calendar", "日历", "calendar"), ("plugins", "插件", "plugin"), ("settings", "设置", "settings") })
+        foreach (var (key, label, iconName) in new[] { ("entries", "全部应用", "folder"), ("calendar", "日历", "calendar"), ("plugins", "插件", "plugin"), ("settings", "设置", "settings") })
         {
             var button = Design.Button("", () => { if (key == "calendar") ctx.OpenCalendar(); else ShowPage(key); });
             var glyph = Design.Icon(iconName, 18);
@@ -171,7 +171,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         entries.PreviewMouseMove += (_, e) => { if (e.LeftButton == MouseButtonState.Pressed && (e.GetPosition(entries) - start).Length > 8 && entries.SelectedItem is EntryRow item) DragDrop.DoDragDrop(entries, new DataObject("GlassBogo.Entry", item.Entry.Id), DragDropEffects.Move); };
         entries.ContextMenu = new ContextMenu();
         entries.PreviewMouseRightButtonDown += (_, _) => EntryMenu();
-        ShowPage("home");
+        ShowPage("entries");
     }
     private void OnData(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() => { if (page == "entries") { RefreshCategoryFilter(); RefreshEntries(); } else if (page == "home") RefreshHomeStats(); });
     private void ShowPage(string target)
@@ -210,7 +210,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         panel.Children.Add(description);
         var shortcuts = new WrapPanel { Margin = new(-4, 0, 0, 16) };
         shortcuts.Children.Add(Design.Button("收纳桌面", () => HarvestFlow.Start(this, ctx)));
-        shortcuts.Children.Add(Design.Button("全部入口", () => ShowPage("entries")));
+        shortcuts.Children.Add(Design.Button("全部应用", () => ShowPage("entries")));
         shortcuts.Children.Add(Design.AsyncButton("添加应用", () => PickApps()));
         shortcuts.Children.Add(Design.Button("设置", () => ShowPage("settings")));
         panel.Children.Add(shortcuts);
@@ -243,7 +243,7 @@ internal sealed class WorkspaceWindow : GlassWindow
             return;
         var state = ctx.Db.Current;
         var latest = ctx.Harvest.Latest();
-        homeCounts.Text = $"{state.Entries.Count} 个入口 · {state.Categories.Count} 个分类 · {state.Entries.Count(e => e.CategoryId == "inbox")} 个待整理";
+        homeCounts.Text = $"{state.Entries.Count} 个应用 · {state.Categories.Count} 个收纳夹";
         homeHarvest.Text = latest is null ? "还没有收纳过桌面。" : $"上次收纳 {latest.CreatedAt}：把 {latest.MovedCount} 项移到 {latest.ArchiveRoot}";
         homeIcons.Text = ctx.Desktop.HiddenByUs ? "桌面图标当前由 GlassBogo 隐藏，退出时自动恢复。" : "桌面图标当前可见。";
     }
@@ -330,7 +330,7 @@ internal sealed class WorkspaceWindow : GlassWindow
         if (page != "entries")
             return;
         var id = (string?)filter.SelectedValue;
-        var rows = ctx.Catalog.Search(search.Text.Trim()).Where(e => string.IsNullOrEmpty(id) || e.CategoryId == id).Select(e => new EntryRow(e, ctx.Db.Current.Categories.First(c => c.Id == e.CategoryId).Name, entry => _ = ctx.Open(entry), ClassifyOne, RemoveOne, PinOne)).ToArray();
+        var rows = ctx.Catalog.Search(search.Text.Trim()).Where(e => string.IsNullOrEmpty(id) || e.CategoryId == id).Select(e => new EntryRow(e, ctx.Db.Current.Categories.FirstOrDefault(c => c.Id == e.CategoryId)?.Name ?? "全部应用", entry => _ = ctx.Open(entry), ClassifyOne, RemoveOne, PinOne)).ToArray();
         entries.ItemsSource = rows;
         status.Text = $"{rows.Length} 个入口 · Ctrl / Shift 可多选；拖到下方分类调整归属。";
     }

@@ -157,6 +157,10 @@ internal sealed class AppContext : IDisposable
         Db = new(path);
         Harvest = new(path);
         Catalog = new(Db);
+        // v2：不再有「待整理」夹。旧库里若有，就地移除，里面的应用变成"不属于任何收纳夹"，
+        // 只出现在「全部应用」里（Db 每日备份保留，可回滚）。
+        if (Db.Current.Categories.Any(c => c.Id == "inbox"))
+            Design.Guard(() => Catalog.RemoveCategory("inbox"));
         Calendar = new(Db);
         try
         {

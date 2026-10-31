@@ -4,14 +4,14 @@ using System.Text.Json.Serialization;
 namespace GlassBogo.Core;
 
 public record Category(string Id, string Name);
-public record Entry(string Id, string Name, string Target, string Kind = "path", string Arguments = "", string WorkingDirectory = "", string CategoryId = "inbox", bool Pinned = false, double PinOrder = 0, string? LastUsed = null);
+public record Entry(string Id, string Name, string Target, string Kind = "path", string Arguments = "", string WorkingDirectory = "", string CategoryId = "", bool Pinned = false, double PinOrder = 0, string? LastUsed = null);
 public record TaskCategory(string Id, string Name, string Color);
 public record CalendarTask(string Id, string Title, string Date, string Time = "", string Notes = "", string Priority = "normal", bool Completed = false, double Order = 0, string? CategoryId = null);
 public record Preferences(string Theme = "system", string? Monitor = null, bool AutoHide = false, bool Onboarded = false, string QuickShortcut = "N", bool AutoStart = false, bool HardwareAcceleration = false);
 public record State
 {
     public int Version { get; init; } = 1;
-    public List<Category> Categories { get; init; } = [new("inbox", "待整理")];
+    public List<Category> Categories { get; init; } = [];
     public List<Entry> Entries { get; init; } = [];
     public List<CalendarTask> Tasks { get; init; } = [];
     public List<TaskCategory> TaskCategories { get; init; } = [new("work", "工作", "#6B9FE8"), new("life", "生活", "#72B5A0")];
@@ -41,13 +41,13 @@ public static class DataJson
     {
         if (s.Version != 1)
             throw new InvalidDataException("不支持的数据版本。");
-        if (s.Categories.Count(c => c.Id == "inbox") != 1 || s.Categories.Select(c => c.Id).Distinct().Count() != s.Categories.Count)
-            throw new InvalidDataException("分类标识重复或缺少待整理分类。");
+        if (s.Categories.Select(c => c.Id).Distinct().Count() != s.Categories.Count || s.Categories.Any(c => string.IsNullOrWhiteSpace(c.Name)))
+            throw new InvalidDataException("收纳夹标识重复或名称为空。");
         if (s.Categories.Any(c => string.IsNullOrWhiteSpace(c.Name) || c.Name.Length > 40))
             throw new InvalidDataException("分类名称需为 1–40 字。");
         if (s.Entries.Select(e => e.Id).Distinct().Count() != s.Entries.Count || s.Entries.Select(Catalog.Identity).Distinct(StringComparer.Ordinal).Count() != s.Entries.Count)
             throw new InvalidDataException("存在重复入口。");
-        if (s.Entries.Any(e => string.IsNullOrWhiteSpace(e.Name) || string.IsNullOrWhiteSpace(e.Target) || !s.Categories.Any(c => c.Id == e.CategoryId) || e.Kind is not ("path" or "app" or "url")))
+        if (s.Entries.Any(e => string.IsNullOrWhiteSpace(e.Name) || string.IsNullOrWhiteSpace(e.Target) || (e.CategoryId.Length > 0 && !s.Categories.Any(c => c.Id == e.CategoryId)) || e.Kind is not ("path" or "app" or "url")))
             throw new InvalidDataException("入口数据无效。");
         if (s.Entries.Any(e => !double.IsFinite(e.PinOrder)))
             throw new InvalidDataException("钉住排序值无效。");

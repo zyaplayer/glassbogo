@@ -127,6 +127,13 @@ internal static class SelfTest
                     await Task.Delay(700);
                     if (!string.IsNullOrEmpty(pluginPath))
                     {
+                        // 「概览」已从导航移除，但插件卡片仍挂在该页；QA 显式切过去以覆盖插件会话。
+                        typeof(WorkspaceWindow).GetMethod("ShowPage", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                            .Invoke(workspace, ["home"]);
+                        await Task.Delay(700);
+                        // 反射切页不会走布局，插件卡片的按钮还不在可视树里，先强制布局再断言。
+                        workspace.UpdateLayout();
+                        await Task.Delay(400);
                         if (PluginSession.ActiveCount != 1)
                             throw new Exception("插件卡片未建立会话。");
                         var action = Walk(workspace).OfType<Button>().First(b => b.Content as string == "完成一次专注");

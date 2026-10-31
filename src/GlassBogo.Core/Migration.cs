@@ -86,7 +86,7 @@ public static class Migration
                     s.Entries.Add(entry with
                     {
                         Id = Guid.NewGuid().ToString("N"),
-                        CategoryId = membership.GetValueOrDefault(entry.Id, "inbox")
+                        CategoryId = membership.GetValueOrDefault(entry.Id, "")
                     });
                     added++;
                 }

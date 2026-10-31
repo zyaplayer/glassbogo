@@ -219,10 +219,9 @@ internal sealed class DockWindow : GlassWindow
             tile.MouseLeave += (_, _) => ScheduleClose();
             tile.Click += (_, _) => { ShowCategory(bound, self, true); popup.Activate(); };
             var menu = new ContextMenu();
-            if (bound.Id != "inbox")
             {
                 AddMenu(menu, "重命名", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "收纳夹名称", bound.Name, name => ctx.Catalog.SaveCategory(bound.Id, name)); } finally { hold.Dispose(); ScheduleClose(); } });
-                AddMenu(menu, "移除收纳夹（应用回到待整理）", () => ctx.Catalog.RemoveCategory(bound.Id));
+                AddMenu(menu, "移除收纳夹（应用回到全部应用）", () => ctx.Catalog.RemoveCategory(bound.Id));
             }
             AddMenu(menu, "添加入口", () => ctx.OpenWorkspace(true));
             TrackMenu(menu);
@@ -509,10 +508,9 @@ internal sealed class DockWindow : GlassWindow
             System.Windows.Automation.AutomationProperties.SetName(button, cat.Name + " " + entries.Length);
             button.Click += (_, _) => { ShowCategory(cat, button, true); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
             var menu = new ContextMenu();
-            if (cat.Id != "inbox")
             {
                 AddMenu(menu, "重命名", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "分类名称", cat.Name, name => ctx.Catalog.SaveCategory(cat.Id, name)); } finally { hold.Dispose(); ScheduleClose(); } });
-                AddMenu(menu, "移除分类（入口回到待整理）", () => ctx.Catalog.RemoveCategory(cat.Id));
+                AddMenu(menu, "移除收纳夹（应用回到全部应用）", () => ctx.Catalog.RemoveCategory(cat.Id));
             }
             AddMenu(menu, "添加入口", () => ctx.OpenWorkspace(true));
             TrackMenu(menu);
@@ -995,7 +993,14 @@ internal sealed class DockWindow : GlassWindow
     }
     internal void QaVerifyNavigation()
     {
-        var category = ctx.Db.Current.Categories.First(c => ctx.Db.Current.Entries.Count(e => e.CategoryId == c.Id) > 12);
+        var category = ctx.Db.Current.Categories.OrderByDescending(c => ctx.Db.Current.Entries.Count(e => e.CategoryId == c.Id)).FirstOrDefault();
+        // 删掉「待整理」后，应用可以不属于任何收纳夹；没有哪个夹超过 12 项时只验证能打开面板。
+        if (category is null || ctx.Db.Current.Entries.Count(e => e.CategoryId == category.Id) <= 12)
+        {
+            ShowGrid();
+            HidePopup();
+            return;
+        }
         ShowGrid();
         var tile = gridButtons.FirstOrDefault(b => b.DataContext is Category c && c.Id == category.Id)
             ?? throw new InvalidOperationException("分类网格缺少该分类。");

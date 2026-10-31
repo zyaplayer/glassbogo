@@ -114,7 +114,7 @@ internal static class HarvestFlow
         }
         catch (Exception ex) { icons = "桌面图标未隐藏：" + ex.Message; }
         ctx.Db.Update(s => s.Preferences = s.Preferences with { Onboarded = true });
-        MessageBox.Show(owner, $"已收纳 {moved.Length} 项到\n{batch.ArchiveRoot}\n\n新增 {added.Added} 个入口到「待整理」，已有 {added.Existing} 个。\n{icons}\n\n撤销：工作台 → 设置 → 桌面收纳 → 撤销上次收纳", "GlassBogo");
+        MessageBox.Show(owner, $"已收纳 {moved.Length} 项到\n{batch.ArchiveRoot}\n\n新增 {added.Added} 个应用到「全部应用」，已有 {added.Existing} 个。\n{icons}\n\n撤销：工作台 → 设置 → 桌面收纳 → 撤销上次收纳", "GlassBogo");
     }
 
     private static string DisplayName(HarvestEntry entry) => entry.Kind == HarvestKind.Folder ? entry.Name : Path.GetFileNameWithoutExtension(entry.Name);

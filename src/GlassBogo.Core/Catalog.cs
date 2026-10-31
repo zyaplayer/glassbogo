@@ -73,8 +73,6 @@ public sealed class Catalog(Database db) : IEntryCatalog
                 s.Categories.Add(new(Guid.NewGuid().ToString("N"), name));
             else
             {
-                if (id == "inbox")
-                    throw new InvalidOperationException("待整理分类不可重命名。");
                 var i = s.Categories.FindIndex(c => c.Id == id);
                 s.Categories[i] = s.Categories[i] with
                 {
@@ -85,13 +83,11 @@ public sealed class Catalog(Database db) : IEntryCatalog
     }
     public void RemoveCategory(string id)
     {
-        if (id == "inbox")
-            throw new InvalidOperationException("待整理分类不可移除。");
-        db.Update(s => { s.Categories.RemoveAll(c => c.Id == id); for (int i = 0; i < s.Entries.Count; i++) if (s.Entries[i].CategoryId == id) s.Entries[i] = s.Entries[i] with { CategoryId = "inbox" }; });
+        db.Update(s => { s.Categories.RemoveAll(c => c.Id == id); for (int i = 0; i < s.Entries.Count; i++) if (s.Entries[i].CategoryId == id) s.Entries[i] = s.Entries[i] with { CategoryId = "" }; });
     }
     public void ReorderCategory(string id, string before)
     {
-        if (id == before || id == "inbox" || before == "inbox")
+        if (id == before)
             return;
         db.Update(s => { var item = s.Categories.First(c => c.Id == id); s.Categories.Remove(item); s.Categories.Insert(s.Categories.FindIndex(c => c.Id == before), item); });
     }
