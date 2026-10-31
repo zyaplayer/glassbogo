@@ -196,21 +196,41 @@ internal sealed class DockWindow : GlassWindow
         pending = null;
         strip.Children.Clear();
         selection.Visibility = Visibility.Hidden;
-        var categories = new Button
+        Button? firstTile = null;
+        var categoryTiles = new List<Button>();
+        foreach (var category in ctx.Db.Current.Categories)
         {
-            Content = Tile(Design.Icon("folder", 20), "收纳", ctx.Db.Current.Categories.Count + " 个"),
-            Width = 76,
-            Height = 72,
-            Padding = new(4),
-            Margin = new(4, 0, 4, 0),
-            ToolTip = "全部分类"
-        };
-        categories.SetResourceReference(StyleProperty, "CategoryButton");
-        System.Windows.Automation.AutomationProperties.SetName(categories, "全部分类");
-        categories.MouseEnter += (_, _) => ResumePopup();
-        categories.MouseLeave += (_, _) => ScheduleClose();
-        categories.Click += (_, _) => { ShowGrid(true); popup.Activate(); popup.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); };
-        gridAnchor = categories;
+            var categoryEntries = ctx.Db.Current.Entries.Count(e => e.CategoryId == category.Id);
+            var tile = new Button
+            {
+                Content = Tile(Design.Icon("folder", 20), category.Name, categoryEntries + " 个"),
+                DataContext = category,
+                Width = 76,
+                Height = 72,
+                Padding = new(4),
+                Margin = new(4, 0, 4, 0),
+                ToolTip = $"{category.Name}（{categoryEntries} 个应用）",
+            };
+            tile.SetResourceReference(FrameworkElement.StyleProperty, "CategoryButton");
+            System.Windows.Automation.AutomationProperties.SetName(tile, category.Name);
+            var self = tile;
+            var bound = category;
+            tile.MouseEnter += (_, _) => ResumePopup();
+            tile.MouseLeave += (_, _) => ScheduleClose();
+            tile.Click += (_, _) => { ShowCategory(bound, self, true); popup.Activate(); };
+            var menu = new ContextMenu();
+            if (bound.Id != "inbox")
+            {
+                AddMenu(menu, "重命名", () => { var hold = hover.Hold(HoldReason.Editing); try { Design.Prompt(this, "收纳夹名称", bound.Name, name => ctx.Catalog.SaveCategory(bound.Id, name)); } finally { hold.Dispose(); ScheduleClose(); } });
+                AddMenu(menu, "移除收纳夹（应用回到待整理）", () => ctx.Catalog.RemoveCategory(bound.Id));
+            }
+            AddMenu(menu, "添加入口", () => ctx.OpenWorkspace(true));
+            TrackMenu(menu);
+            tile.ContextMenu = menu;
+            categoryTiles.Add(tile);
+            firstTile ??= tile;
+        }
+        gridAnchor = firstTile;
         foreach (var entry in ctx.Catalog.Pinned())
         {
             var image = new Image { Width = 40, Height = 40, Margin = new(0, 0, 0, 6) };
@@ -230,17 +250,8 @@ internal sealed class DockWindow : GlassWindow
             _ = MarkUnavailable(button, entry);
             strip.Children.Add(button);
         }
-        var plusMenu = new ContextMenu();
-        AddMenu(plusMenu, "钉住常用应用", () => { HidePopup(); ctx.OpenWorkspace(true); });
-        AddMenu(plusMenu, "新建应用收纳", () =>
-        {
-            var hold = hover.Hold(HoldReason.Editing);
-            try { Design.Prompt(this, "新建应用收纳", "", name => { ctx.Catalog.SaveCategory(null, name); ShowGrid(); }); }
-            finally { hold.Dispose(); ScheduleClose(); }
-        });
-        TrackMenu(plusMenu);
-        var add = new Button { Content = "＋", ToolTip = "钉住常用应用 / 新建应用收纳" };
-        add.Click += (_, _) => { plusMenu.PlacementTarget = add; plusMenu.Placement = PlacementMode.Top; plusMenu.IsOpen = true; };
+        var add = new Button { Content = "＋", ToolTip = "钉住常用应用 / 新建收纳夹" };
+        add.Click += (_, _) => ShowActions();
         add.Width = 76;
         add.Height = 72;
         add.Padding = new(8);
@@ -248,8 +259,8 @@ internal sealed class DockWindow : GlassWindow
         add.ToolTip = "钉住常用应用 / 新建应用收纳";
         add.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
         add.VerticalAlignment = VerticalAlignment.Center;
-        // 底部栏顺序：常用应用 → 应用收纳 → ＋ → 工作台 → 日历
-        strip.Children.Add(categories);
+        // 顺序：常用应用 → 各收纳夹 → ＋ → 工作台 → 日历
+        foreach (var tile in categoryTiles) strip.Children.Add(tile);
         strip.Children.Add(add);
         var workspaceButton = new Button { Content = "工作台", ToolTip = "管理入口、分类与设置", Width = 76, Height = 72, Padding = new(8), Margin = new(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
         workspaceButton.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
@@ -338,6 +349,50 @@ internal sealed class DockWindow : GlassWindow
         DrawPopup(!fresh && !wasClosing);
         Present(fresh, wasClosing, clicked, generation);
     }
+    /// <summary>＋ 的动作面板：两个大按钮，直接在弹层里出现，不用系统右键菜单（会因焦点被抢而秒关）。</summary>
+    private void ShowActions()
+    {
+        openTimer.Stop();
+        closeTimer.Stop();
+        var wasClosing = hover.Phase == HoverPhase.Closing;
+        var fresh = !popup.IsVisible;
+        hover.Open("__actions");
+        gridMode = true;
+        active = null;
+        if (gridAnchor is not null)
+        {
+            anchor = gridAnchor;
+            UpdateSelection(gridAnchor);
+        }
+        popup.SetBody(ActionPanel(), !fresh);
+        Present(fresh, wasClosing, true, hover.Generation);
+    }
+
+    private UIElement ActionPanel()
+    {
+        var panel = new StackPanel { MinWidth = 380 };
+        var title = Design.Text("要做什么？", 18);
+        title.FontWeight = FontWeights.SemiBold;
+        panel.Children.Add(title);
+        var hint = Design.Text("先选一个方向，下面就会出现下一步。", 12, "Muted");
+        hint.Margin = new Thickness(0, 4, 0, 12);
+        panel.Children.Add(hint);
+        var pinned = new Button { Content = "① 钉住常用应用（放到最左边那一排）", HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(14, 12, 14, 12), Margin = new Thickness(0, 0, 0, 8) };
+        pinned.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
+        pinned.Click += (_, _) => { HidePopup(); ctx.OpenWorkspace(true); };
+        panel.Children.Add(pinned);
+        var folder = new Button { Content = "② 新建收纳夹（学习 / 工作 / 娱乐…）", HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(14, 12, 14, 12) };
+        folder.SetResourceReference(FrameworkElement.StyleProperty, "QuietButton");
+        folder.Click += (_, _) =>
+        {
+            var hold = hover.Hold(HoldReason.Editing);
+            try { Design.Prompt(this, "新建收纳夹", "", name => { ctx.Catalog.SaveCategory(null, name); Render(); }); }
+            finally { hold.Dispose(); ScheduleClose(); }
+        };
+        panel.Children.Add(folder);
+        return panel;
+    }
+
     private void ShowGrid(bool clicked = false)
     {
         openTimer.Stop();
@@ -904,8 +959,8 @@ internal sealed class DockWindow : GlassWindow
     }
     internal async Task QaVerifyIcons()
     {
-        if (!strip.Children.OfType<Button>().Any(b => (b.ToolTip as string) == "全部分类"))
-            throw new InvalidOperationException("Dock 缺少分类按钮。");
+        if (!strip.Children.OfType<Button>().Any(b => b.DataContext is Category))
+            throw new InvalidOperationException("Dock 缺少收纳夹。");
         var stamp = DateTime.Now;
         ctx.Catalog.Touch(ctx.Db.Current.Entries[0].Id, stamp);
         ctx.Catalog.Touch(ctx.Db.Current.Entries[1].Id, stamp.AddMinutes(1));
