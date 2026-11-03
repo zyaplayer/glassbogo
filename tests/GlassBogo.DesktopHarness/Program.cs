@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 if (args.Length < 2) throw new ArgumentException("Usage: DesktopHarness app.exe output-directory [stress-seconds] [--glass-lab-qa]");
-var mode = args.Length > 3 && args[3] == "--glass-lab-qa" ? "--glass-lab-qa" : "--qa";
+var mode = args.Length > 3 && args[3] is "--glass-lab-qa" or "--v2-preflight-qa" or "--v2-ui-qa" or "--v2-discovery-ui-check" ? args[3] : "--qa";
 var name = "GlassBogo-QA-" + Guid.NewGuid().ToString("N");
 var desktop = Win.CreateDesktop(name, 0, 0, 0, 0x1FF, 0);
 if (desktop == 0) throw new System.ComponentModel.Win32Exception();

@@ -20,8 +20,11 @@ Assert-ManagedPath $staging
 Assert-ManagedPath $previous
 New-Item -ItemType Directory -Path $staging | Out-Null
 Copy-Item -Path (Join-Path $PublishDirectory '*') -Destination $staging -Recurse -Force
-if (Test-Path -LiteralPath $previous) { Assert-ManagedPath $previous; Remove-Item -LiteralPath $previous -Recurse -Force }
-if (Test-Path -LiteralPath $installation) { Assert-ManagedPath $installation; Move-Item -LiteralPath $installation -Destination $previous }
+if (Test-Path -LiteralPath $installation) {
+    if (Test-Path -LiteralPath $previous) { Assert-ManagedPath $previous; Remove-Item -LiteralPath $previous -Recurse -Force }
+    Assert-ManagedPath $installation
+    Move-Item -LiteralPath $installation -Destination $previous
+}
 try { Assert-ManagedPath $staging; Move-Item -LiteralPath $staging -Destination $installation }
 catch { if (Test-Path -LiteralPath $previous) { Assert-ManagedPath $previous; Move-Item -LiteralPath $previous -Destination $installation }; throw }
 $desktop = [Environment]::GetFolderPath('DesktopDirectory')
@@ -32,5 +35,4 @@ $shortcut.WorkingDirectory = $installation
 $shortcut.IconLocation = $shortcut.TargetPath + ',0'
 $shortcut.Description = 'GlassBogo 桌面入口工作台'
 $shortcut.Save()
-if (Test-Path -LiteralPath $previous) { Assert-ManagedPath $previous; Remove-Item -LiteralPath $previous -Recurse -Force }
-Write-Output "已安装：$installation。数据保留在 LOCALAPPDATA\GlassBogo。"
+Write-Output "已安装：$installation。数据保留在 LOCALAPPDATA\GlassBogo；上一版本程序保留在 $previous。回滚旧程序前请恢复对应迁移前数据备份。"

@@ -28,6 +28,7 @@ internal static class Design
         r["Card"] = Brush(Dark ? "#183F5974" : "#38FFFFFF");
         r["SurfaceTint"] = Brush(Dark ? "#300B1628" : "#18FFFFFF");
         r["SurfaceFallback"] = Brush(Dark ? "#FF19283C" : "#FFF0F6FD");
+        r["DockFallback"] = Brush(Dark ? "#E61D2A3D" : "#E6CBD8E6");
         r["Surface"] = r[GlassEnvironment.Transparency ? "SurfaceTint" : "SurfaceFallback"];
         r["ScrollThumb"] = Brush(Dark ? "#608BA3BF" : "#506580A0");
         r["Line"] = r["SurfaceLine"] = Brush(Dark ? "#30EAF5FF" : "#65FFFFFF");
@@ -59,6 +60,7 @@ internal static class Design
             r["AccentLine"] = SystemColors.WindowTextBrush;
             r["ScrollThumb"] = SystemColors.WindowTextBrush;
             r["SurfaceFallback"] = r["SurfaceTint"] = SystemColors.WindowBrush;
+            r["DockFallback"] = SystemColors.WindowBrush;
             r["FocusRing"] = r["Warning"] = SystemColors.WindowTextBrush;
             r["SelectedInk"] = SystemColors.HighlightTextBrush;
             r["DisabledInk"] = SystemColors.GrayTextBrush;
@@ -125,6 +127,14 @@ internal static class Design
         var animation = new DoubleAnimation(from, value, TimeSpan.FromMilliseconds(milliseconds)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop };
         animation.Completed += (_, _) => { if (versions[property] == version) target.BeginAnimation(property, null); };
         target.BeginAnimation(property, animation);
+    }
+    internal static void Reveal(FrameworkElement element)
+    {
+        if (!GlassEnvironment.Animate) { element.BeginAnimation(UIElement.OpacityProperty, null); element.Opacity = 1; if (element.RenderTransform is TranslateTransform old) { old.BeginAnimation(TranslateTransform.YProperty, null); old.Y = 0; } return; }
+        var shift = element.RenderTransform as TranslateTransform ?? new TranslateTransform(); element.RenderTransform = shift;
+        element.Opacity = 1;
+        element.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(.84, 1, TimeSpan.FromMilliseconds(160)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop });
+        shift.Y = 6; Animate(shift, TranslateTransform.YProperty, 0, 160);
     }
     private static void AttachMotion(Button button)
     {

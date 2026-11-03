@@ -6,6 +6,14 @@ namespace GlassBogo.Core;
 /// </summary>
 public static class Finder
 {
+    public static IReadOnlyList<Entry> Search(IEnumerable<Entry> managed, IEnumerable<Entry> discovered, string query, int limit = 200)
+    {
+        query = query.Trim();
+        if (query.Length == 0 || limit <= 0) return [];
+        // Managed record wins before matching, so a custom name/arguments are never
+        // replaced by a newly discovered alias for the same logical target.
+        return Entries(managed.Concat(discovered).DistinctBy(Catalog.Identity, StringComparer.Ordinal), query, limit);
+    }
     public static IReadOnlyList<Entry> Entries(IEnumerable<Entry> entries, string query, int limit = 8)
     {
         query = query.Trim();

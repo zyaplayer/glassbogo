@@ -207,7 +207,7 @@ internal static class Platform
     }
     internal static Entry Resolve(string path)
     {
-        var name = Path.GetFileNameWithoutExtension(path);
+        var name = TargetName(path, Directory.Exists(path));
         string target = Path.GetFullPath(path), args = "", working = "";
         if (Path.GetExtension(path).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
         {
@@ -226,8 +226,25 @@ internal static class Platform
             }
             finally { if (link is not null) Marshal.FinalReleaseComObject(link); if (shell is not null) Marshal.FinalReleaseComObject(shell); }
         }
-        return new(Guid.NewGuid().ToString("N"), name, target, "path", args, working);
+        return new(Guid.NewGuid().ToString("N"), name, target, "path", args, working, IconSource: path);
     }
+    internal static string TargetName(string path, bool folder = false)
+    {
+        var leaf = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+        var name = folder ? leaf : Path.GetFileNameWithoutExtension(leaf);
+        return string.IsNullOrEmpty(name) ? string.IsNullOrEmpty(leaf) ? Path.GetPathRoot(Path.GetFullPath(path))! : leaf : name;
+    }
+    internal static Task<List<Entry>> DesktopEntries() => Sta(() =>
+    {
+        var entries = new List<Entry>();
+        // Desktop refresh is deliberately shallow and never includes the Start menu.
+        foreach (var desktop in WindowsDesktop.Folders)
+            foreach (var path in Directory.EnumerateFileSystemEntries(desktop, "*", new EnumerationOptions { IgnoreInaccessible = true }))
+                if (!Path.GetFileName(path).Equals("desktop.ini", StringComparison.OrdinalIgnoreCase))
+                    try { entries.Add(Resolve(path)); }
+                    catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException) { }
+        return entries.DistinctBy(Catalog.Identity, StringComparer.Ordinal).OrderBy(e => e.Name).ToList();
+    });
     internal static Task<List<Entry>> InstalledApps() => Sta(() =>
     {
         var entries = new List<Entry>();
@@ -238,7 +255,7 @@ internal static class Platform
                 {
                     entries.Add(Resolve(p));
                 }
-                catch (COMException) { }
+                catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException) { }
         }
         object? shell = null, folderObject = null, items = null;
         try
@@ -254,14 +271,15 @@ internal static class Platform
                     {
                         string path = item.Path, name = item.Name;
                         string appId = Convert.ToString(item.ExtendedProperty("System.AppUserModel.ID")) ?? "";
-                        if (!string.IsNullOrWhiteSpace(appId))
-                            entries.Add(new(Guid.NewGuid().ToString("N"), name, appId, "app"));
-                        else if (File.Exists(path))
+                        if (File.Exists(path))
                             entries.Add(Resolve(path) with
                             {
                                 Name = name
                             });
+                        else if (!string.IsNullOrWhiteSpace(appId))
+                            entries.Add(new(Guid.NewGuid().ToString("N"), name, appId, "app"));
                     }
+                    catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException) { }
                     finally { Marshal.FinalReleaseComObject(item); }
                 }
             }
@@ -280,42 +298,64 @@ internal static class Platform
 }
 internal sealed class IconCache
 {
+    private int epoch;
+    private readonly Func<string, Task<ImageSource?>> load;
+    internal IconCache(Func<string, Task<ImageSource?>>? load = null) => this.load = load ?? (target => Platform.Sta(() => target.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) || File.Exists(target) || Directory.Exists(target) ? Native.GetIcon(target) : null));
+    internal void Clear() { lock (cache) epoch++; }
     private static ImageSource Fallback { get; } = CreateFallback();
     private static ImageSource CreateFallback()
     {
         var group = new DrawingGroup();
-        var brush = new SolidColorBrush(Color.FromRgb(100, 155, 210));
-        group.Children.Add(new GeometryDrawing(brush, null, new RectangleGeometry(new Rect(2, 2, 28, 28), 7, 7)));
-        for (int i = 0; i < 4; i++)
-            group.Children.Add(new GeometryDrawing(Brushes.White, null, new RectangleGeometry(new Rect(8 + i % 2 * 10, 8 + i / 2 * 10, 6, 6), 2, 2)));
+        var brush = new SolidColorBrush(Color.FromRgb(113, 128, 150));
+        group.Children.Add(new GeometryDrawing(brush, null, new RectangleGeometry(new Rect(2, 4, 28, 24), 4, 4)));
+        group.Children.Add(new GeometryDrawing(Brushes.White, null, new RectangleGeometry(new Rect(5, 11, 22, 14), 1, 1)));
+        group.Children.Add(new GeometryDrawing(Brushes.White, null, new EllipseGeometry(new Point(7, 8), 1, 1)));
         var image = new DrawingImage(group);
         image.Freeze();
         return image;
     }
 
-    private readonly Dictionary<string, ImageSource?> cache = new(StringComparer.OrdinalIgnoreCase);
+    private sealed record Cached(ImageSource? Icon, DateTime RetryAt, int Epoch);
+    private readonly Dictionary<string, Cached> cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim workers = new(2);
     internal async Task<ImageSource?> Get(Entry entry)
     {
-        if (entry.Kind != "path")
+        if (entry.Kind == "url")
             return Fallback;
+        var target = entry.Kind == "app" && !entry.Target.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) ? "shell:AppsFolder\\" + entry.Target : entry.Target;
+        var targets = new[] { entry.IconSource, target }.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var iconTarget = string.Join('\0', targets);
         lock (cache)
-            if (cache.TryGetValue(entry.Target, out var hit))
-                return hit;
+            if (cache.TryGetValue(iconTarget, out var hit) && hit.Epoch == epoch && DateTime.UtcNow < hit.RetryAt)
+                return hit.Icon ?? Fallback;
         await workers.WaitAsync();
         try
         {
-            lock (cache)
-                if (cache.TryGetValue(entry.Target, out var hit))
-                    return hit;
-            var icon = await Task.Run(() => Native.GetIcon(entry.Target));
+            int requestEpoch;
+            ImageSource? previous;
             lock (cache)
             {
-                if (cache.Count >= 512)
-                    cache.Remove(cache.Keys.First());
-                cache[entry.Target] = icon ?? Fallback;
+                if (cache.TryGetValue(iconTarget, out var hit) && hit.Epoch == epoch && DateTime.UtcNow < hit.RetryAt)
+                    return hit.Icon ?? Fallback;
+                previous = hit?.Icon;
+                requestEpoch = epoch;
             }
-            return icon ?? Fallback;
+            ImageSource? icon = null;
+            foreach (var source in targets)
+            {
+                try { icon = await load(source); }
+                catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+                if (icon is not null) break;
+            }
+            lock (cache)
+            {
+                if (requestEpoch == epoch)
+                {
+                    if (cache.Count >= 512 && !cache.ContainsKey(iconTarget)) cache.Remove(cache.Keys.First());
+                    cache[iconTarget] = new(icon ?? previous, icon is null ? DateTime.UtcNow.AddSeconds(3) : DateTime.MaxValue, epoch);
+                }
+            }
+            return icon ?? previous ?? Fallback;
         }
         finally { workers.Release(); }
     }

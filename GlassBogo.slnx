@@ -15,5 +15,6 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/GlassBogo.Icon/GlassBogo.Icon.csproj" />
+    <Project Path="tools/GlassBogo.Preflight/GlassBogo.Preflight.csproj" />
   </Folder>
 </Solution>

@@ -64,4 +64,30 @@ internal static class DesktopVisibilityTest
         }
         finally { DestroyWindow(view); parent.Close(); }
     }
+    internal static async Task VerifyController(string data)
+    {
+        RequireIsolatedDesktop();
+        var shellClass = new WindowClass { Proc = proc, Class = "SHELLDLL_DefView" }; RegisterClass(ref shellClass);
+        var listClass = new WindowClass { Proc = proc, Class = "SysListView32" }; RegisterClass(ref listClass);
+        var parent = new Window { Width = 250, Height = 100, Title = "QA desktop icons" }; parent.Show();
+        var root = new WindowInteropHelper(parent).Handle;
+        var view = CreateWindowEx(0, "SHELLDLL_DefView", "", 0x50000000, 0, 0, 200, 80, root, 0, 0, 0);
+        var list = CreateWindowEx(0, "SysListView32", "", 0x50000000, 0, 0, 200, 80, view, 0, 0, 0);
+        try
+        {
+            if (view == 0 || list == 0 || Native.DesktopList() != list) throw new InvalidOperationException("无法建立桌面图标隔离模拟。");
+            await using (var controller = new DesktopIconController(data, listen: false))
+            {
+                await Task.Run(() => controller.Initialize(true));
+                if (Native.IsWindowVisible(list)) throw new InvalidOperationException("新桌面隐藏未生效。");
+                DestroyWindow(list);
+                list = CreateWindowEx(0, "SysListView32", "", 0x50000000, 0, 0, 200, 80, view, 0, 0, 0);
+                if (list == 0) throw new InvalidOperationException("模拟 Explorer 图标视图重建失败。");
+                await Task.Run(controller.Reconcile);
+                if (Native.IsWindowVisible(list)) throw new InvalidOperationException("重建后的桌面隐藏未恢复。");
+            }
+            if (!Native.IsWindowVisible(list) || File.Exists(Path.Combine(data, "desktop-visibility.json"))) throw new InvalidOperationException("退出时未恢复图标。");
+        }
+        finally { DestroyWindow(view); parent.Close(); }
+    }
 }

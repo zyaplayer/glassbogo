@@ -216,5 +216,6 @@ Test("归档夹自身不被收纳且空计划拒绝", () =>
     Check(plan.Items.Count == 0);
     Throws(() => harvest.Execute(plan));
 });
+V2CoreTests.Run(Test, root);
 Console.WriteLine($"RESULT passed={passed} failed={failed}; isolated data={root}");
 Environment.ExitCode = failed == 0 ? 0 : 1;

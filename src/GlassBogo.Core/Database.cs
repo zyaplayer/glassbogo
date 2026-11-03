@@ -16,7 +16,7 @@ public sealed class Database : IDisposable
         get; private set;
     }
     public event EventHandler? Changed;
-    public Database(string directory)
+    public Database(string directory, bool upgradeToV2 = false)
     {
         DirectoryPath = Path.GetFullPath(directory);
         Directory.CreateDirectory(DirectoryPath);
@@ -31,15 +31,28 @@ public sealed class Database : IDisposable
             using var cmd = connection.CreateCommand();
             cmd.CommandText = "CREATE TABLE IF NOT EXISTS document (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL); PRAGMA user_version;";
             var version = Convert.ToInt32(cmd.ExecuteScalar());
-            if (version > 1)
+            if (version > 2)
                 throw new InvalidDataException("数据库由更新版本创建，请升级 GlassBogo。");
             cmd.CommandText = "SELECT json FROM document WHERE id=1";
             var json = cmd.ExecuteScalar() as string;
             Current = json is null ? new State() : JsonSerializer.Deserialize<State>(json, DataJson.Options) ?? throw new InvalidDataException("数据为空。");
             DataJson.Validate(Current);
-            if (version == 0)
+            if (upgradeToV2 && Current.Version == 1)
             {
-                cmd.CommandText = "PRAGMA user_version=1";
+                var next = StateUpgrade.ToV2(Current);
+                if (json is not null)
+                    AtomicWrite(Path.Combine(DirectoryPath, "recovery", "v1-before-v2-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fffffff") + ".json"), json);
+                using var tx = connection.BeginTransaction();
+                cmd.Transaction = tx;
+                cmd.CommandText = "INSERT INTO document(id,json) VALUES(1,$json) ON CONFLICT(id) DO UPDATE SET json=$json; PRAGMA user_version=2;";
+                cmd.Parameters.AddWithValue("$json", JsonSerializer.Serialize(next, DataJson.Options));
+                cmd.ExecuteNonQuery();
+                tx.Commit();
+                Current = next;
+            }
+            else if (version == 0)
+            {
+                cmd.CommandText = "PRAGMA user_version=" + Current.Version;
                 cmd.ExecuteNonQuery();
             }
         }
@@ -52,6 +65,8 @@ public sealed class Database : IDisposable
             var next = DataJson.Clone(Current);
             edit(next);
             DataJson.Validate(next);
+            if (next.Version < Current.Version)
+                throw new InvalidDataException("不能将当前数据库降级；请恢复对应版本的迁移前备份。");
             var backupDir = Path.Combine(DirectoryPath, "backups");
             Directory.CreateDirectory(backupDir);
             var backup = Path.Combine(backupDir, DateTime.Today.ToString("yyyy-MM-dd") + ".json");
@@ -60,7 +75,7 @@ public sealed class Database : IDisposable
             using var tx = connection.BeginTransaction();
             using var cmd = connection.CreateCommand();
             cmd.Transaction = tx;
-            cmd.CommandText = "INSERT INTO document(id,json) VALUES(1,$json) ON CONFLICT(id) DO UPDATE SET json=$json";
+            cmd.CommandText = "INSERT INTO document(id,json) VALUES(1,$json) ON CONFLICT(id) DO UPDATE SET json=$json; PRAGMA user_version=" + next.Version;
             cmd.Parameters.AddWithValue("$json", JsonSerializer.Serialize(next, DataJson.Options));
             cmd.ExecuteNonQuery();
             tx.Commit();
@@ -87,8 +102,9 @@ public sealed class Database : IDisposable
     {
         var next = JsonSerializer.Deserialize<State>(File.ReadAllText(path), DataJson.Options) ?? throw new InvalidDataException("备份为空。");
         DataJson.Validate(next);
+        if (Current.Version == 2 && next.Version == 1) next = StateUpgrade.ToV2(next);
         RecoveryPoint();
-        Update(s => { s.Categories.Clear(); s.Categories.AddRange(next.Categories); s.Entries.Clear(); s.Entries.AddRange(next.Entries); s.Tasks.Clear(); s.Tasks.AddRange(next.Tasks); s.TaskCategories.Clear(); s.TaskCategories.AddRange(next.TaskCategories); s.Preferences = next.Preferences; s.DismissedDiscoveries.Clear(); s.DismissedDiscoveries.AddRange(next.DismissedDiscoveries); s.Migrations.Clear(); s.Migrations.AddRange(next.Migrations); });
+        Update(s => { s.Version = next.Version; s.Categories.Clear(); s.Categories.AddRange(next.Categories); s.Entries.Clear(); s.Entries.AddRange(next.Entries); s.Tasks.Clear(); s.Tasks.AddRange(next.Tasks); s.TaskCategories.Clear(); s.TaskCategories.AddRange(next.TaskCategories); s.Preferences = next.Preferences; s.DismissedDiscoveries.Clear(); s.DismissedDiscoveries.AddRange(next.DismissedDiscoveries); s.Migrations.Clear(); s.Migrations.AddRange(next.Migrations); s.Plugins.Clear(); foreach (var plugin in next.Plugins) s.Plugins.Add(plugin.Key, plugin.Value); });
     }
     public static void AtomicWrite(string path, string content)
     {

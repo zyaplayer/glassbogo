@@ -4,13 +4,14 @@ using System.Text.Json.Serialization;
 namespace GlassBogo.Core;
 
 public record Category(string Id, string Name);
-public record Entry(string Id, string Name, string Target, string Kind = "path", string Arguments = "", string WorkingDirectory = "", string CategoryId = "", bool Pinned = false, double PinOrder = 0, string? LastUsed = null);
+public record Entry(string Id, string Name, string Target, string Kind = "path", string Arguments = "", string WorkingDirectory = "", string CategoryId = "", bool Pinned = false, double PinOrder = 0, string? LastUsed = null, double CategoryOrder = 0, string? IconSource = null);
 public record TaskCategory(string Id, string Name, string Color);
 public record CalendarTask(string Id, string Title, string Date, string Time = "", string Notes = "", string Priority = "normal", bool Completed = false, double Order = 0, string? CategoryId = null);
-public record Preferences(string Theme = "system", string? Monitor = null, bool AutoHide = false, bool Onboarded = false, string QuickShortcut = "N", bool AutoStart = false, bool HardwareAcceleration = false);
+public record SearchShortcut(uint Modifiers = 1, uint VirtualKey = 0xC0);
+public record Preferences(string Theme = "system", string? Monitor = null, bool AutoHide = false, bool Onboarded = false, string QuickShortcut = "N", bool AutoStart = false, bool HardwareAcceleration = false, string IconSize = "medium", string VisualQuality = "strong", SearchShortcut? SearchHotkey = null, bool HideDesktopIcons = false, bool DesktopCalendarVisible = true, double? CalendarX = null, double? CalendarY = null, string CalendarView = "month");
 public record State
 {
-    public int Version { get; init; } = 1;
+    public int Version { get; set; } = 1;
     public List<Category> Categories { get; init; } = [];
     public List<Entry> Entries { get; init; } = [];
     public List<CalendarTask> Tasks { get; init; } = [];
@@ -39,7 +40,7 @@ public static class DataJson
     };
     public static void Validate(State s)
     {
-        if (s.Version != 1)
+        if (s.Version is not (1 or 2))
             throw new InvalidDataException("不支持的数据版本。");
         if (s.Categories.Select(c => c.Id).Distinct().Count() != s.Categories.Count || s.Categories.Any(c => string.IsNullOrWhiteSpace(c.Name)))
             throw new InvalidDataException("收纳夹标识重复或名称为空。");
@@ -49,8 +50,14 @@ public static class DataJson
             throw new InvalidDataException("存在重复入口。");
         if (s.Entries.Any(e => string.IsNullOrWhiteSpace(e.Name) || string.IsNullOrWhiteSpace(e.Target) || (e.CategoryId.Length > 0 && !s.Categories.Any(c => c.Id == e.CategoryId)) || e.Kind is not ("path" or "app" or "url")))
             throw new InvalidDataException("入口数据无效。");
-        if (s.Entries.Any(e => !double.IsFinite(e.PinOrder)))
+        if (s.Entries.Any(e => !double.IsFinite(e.PinOrder) || !double.IsFinite(e.CategoryOrder)))
             throw new InvalidDataException("钉住排序值无效。");
+        if (s.Preferences.IconSize is not ("small" or "medium" or "large") || s.Preferences.VisualQuality is not ("strong" or "reduced" or "off"))
+            throw new InvalidDataException("图标大小或视觉效果设置无效。");
+        if (s.Preferences.CalendarView is not ("month" or "week") || s.Preferences.CalendarX.HasValue != s.Preferences.CalendarY.HasValue || s.Preferences.CalendarX is { } x && !double.IsFinite(x) || s.Preferences.CalendarY is { } y && !double.IsFinite(y))
+            throw new InvalidDataException("日历位置或视图无效。");
+        if (s.Preferences.SearchHotkey is { } shortcut && (shortcut.Modifiers == 0 || (shortcut.Modifiers & ~15u) != 0 || shortcut.VirtualKey is 0 or > 254))
+            throw new InvalidDataException("搜索快捷键无效。");
         if (s.Entries.Any(e => e.LastUsed is { } used && !DateTime.TryParse(used, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out _)))
             throw new InvalidDataException("最近使用时间无效。");
         if (s.Tasks.Select(t => t.Id).Distinct().Count() != s.Tasks.Count)
@@ -75,6 +82,12 @@ public interface IEntryCatalog
     void ReorderCategory(string id, string before);
     void Remove(IEnumerable<string> ids);
     IEnumerable<Entry> Search(string query);
+    IEnumerable<Entry> InCategory(string id);
+    void Rename(string id, string name);
+    void Relocate(string id, Entry resolved);
+    void StepPinned(string id, int direction);
+    void StepEntry(string id, int direction);
+    void StepCategory(string id, int direction);
 }
 public record LaunchResult(bool Success, string? Error = null);
 public interface ILaunchService

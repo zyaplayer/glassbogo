@@ -9,6 +9,26 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length >= 2 && args[0] == "--v2-discovery-ui-check")
+        {
+            V2UiTest.RunDiscoveryCheck(Path.GetFullPath(args[1]), args.Length > 2 ? args[2] : "抖音");
+            return;
+        }
+        if (args.Length >= 2 && args[0] == "--v2-ui-qa")
+        {
+            V2UiTest.Run(Path.GetFullPath(args[1]), args.Length > 2 ? int.Parse(args[2]) : 10);
+            return;
+        }
+        if (args.Length > 0 && args[0] is "--v2-preflight" or "--v2-preflight-qa")
+        {
+            V2Preflight.Run(args);
+            return;
+        }
+        if (args.Length == 2 && args[0] == "--v2-capture-check")
+        {
+            V2Preflight.CaptureCheck(Path.GetFullPath(args[1]));
+            return;
+        }
         // Material research has no database, tray, desktop integration or production mutex.
         if (args.Length > 0 && args[0] is "--glass-lab" or "--glass-lab-qa")
         {
@@ -18,6 +38,16 @@ internal static class Program
         if (args.Length >= 2 && args[0] == "--qa")
         {
             SelfTest.Run(args[1], args.Length > 2 ? int.Parse(args[2]) : 10);
+            return;
+        }
+        if (args.Length == 0)
+        {
+            V2Application.Run();
+            return;
+        }
+        if (!(args.Length == 1 && args[0] == "--restore-desktop") && !(args.Length == 2 && args[0] == "--recover-data") && !(args.Length == 3 && args[0] == "--migrate"))
+        {
+            Environment.ExitCode = 64;
             return;
         }
         var data = Environment.GetEnvironmentVariable("GLASSBOGO_DATA_DIR") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlassBogo");

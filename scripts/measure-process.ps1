@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $targetProcess = Get-Process -Id $ProcessId
 if ($targetProcess.ProcessName -ne 'GlassBogo') { throw '仅采样 GlassBogo 进程。' }
 $metadata = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId"
-if ($metadata.CommandLine -notmatch '\s--qa\s') { throw '仅对通过隔离桌面宿主启动的 --qa 进程采样。' }
+if ($metadata.CommandLine -notmatch '\s--(?:v2-ui-qa|qa)\s') { throw '仅对通过隔离桌面宿主启动的 QA 进程采样。' }
 if ((Split-Path $metadata.ExecutablePath -Leaf) -ne 'GlassBogo.exe') { throw '被测程序不匹配。' }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $output -Force | Out-Null

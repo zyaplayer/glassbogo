@@ -55,12 +55,14 @@ internal sealed class Tray : IDisposable
     private nint customIcon;
     private NotifyData data; private readonly HwndSource source; private readonly Action activate; private readonly ContextMenu menu = new(); private readonly uint taskbarCreated;
     internal Tray(Window window, Action open, Action calendar, Action restore, Action exit)
+        : this(window, [("工作台", open), ("日历", calendar), ("恢复桌面图标", restore), ("退出", exit)]) { }
+    internal Tray(Window window, (string Label, Action Action)[] items)
     {
-        activate = open;
+        activate = items[0].Action;
         var handle = new WindowInteropHelper(window).Handle;
         source = HwndSource.FromHwnd(handle)!;
         taskbarCreated = RegisterWindowMessage("TaskbarCreated");
-        foreach (var item in new[] { ("工作台", open), ("日历", calendar), ("恢复桌面图标", restore), ("退出", exit) })
+        foreach (var item in items)
         {
             var entry = new MenuItem { Header = item.Item1 };
             entry.Click += (_, _) => Design.Guard(item.Item2);
