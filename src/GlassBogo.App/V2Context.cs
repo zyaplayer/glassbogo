@@ -5,9 +5,18 @@ namespace GlassBogo.App;
 
 internal sealed class V2Context : IAsyncDisposable
 {
-    internal Database Db { get; }
-    internal Catalog Catalog { get; }
-    internal CalendarService Calendar { get; }
+    internal Database Db
+    {
+        get;
+    }
+    internal Catalog Catalog
+    {
+        get;
+    }
+    internal CalendarService Calendar
+    {
+        get;
+    }
     internal readonly IconCache Icons = new();
     internal readonly AppDiscovery Discovery;
     internal readonly AppDiscovery DesktopDiscovery;
@@ -21,14 +30,20 @@ internal sealed class V2Context : IAsyncDisposable
     private readonly GlobalSearchHotkey hotkey;
     private Task changingHotkey = Task.CompletedTask;
     private Preferences applied;
-    internal bool Closing { get; private set; }
+    internal bool Closing
+    {
+        get; private set;
+    }
     internal int Menus, Modals;
     internal Dock2Window? Dock;
     private Manager2Window? manager;
     private Search2Window? search;
     private DesktopCalendarWindow? calendar;
     internal DesktopCalendarWindow? CalendarWindow => calendar;
-    internal int IconRevision { get; private set; }
+    internal int IconRevision
+    {
+        get; private set;
+    }
     internal event EventHandler? Changed;
     internal string HotkeyStatus { get; private set; } = "尚未注册";
     internal Preferences Preferences => Db.Current.Preferences;
@@ -37,7 +52,11 @@ internal sealed class V2Context : IAsyncDisposable
     internal double IconSize => Preferences.IconSize switch { "small" => 32, "large" => 48, _ => 40 };
     internal V2Context(Database database, bool qa = false, ILaunchService? launcher = null, AppDiscovery? discovery = null, Func<Entry, Task<TargetState>>? targetProbe = null, AppDiscovery? desktopDiscovery = null)
     {
-        Db = database; Qa = qa; this.launcher = launcher ?? new Launcher(); Catalog = new(Db); Calendar = new(Db);
+        Db = database;
+        Qa = qa;
+        this.launcher = launcher ?? new Launcher();
+        Catalog = new(Db);
+        Calendar = new(Db);
         Discovery = discovery ?? new(qa ? () => Task.FromResult(new List<Entry>()) : null);
         DesktopDiscovery = desktopDiscovery ?? new(qa ? () => Task.FromResult(new List<Entry>()) : Platform.DesktopEntries);
         Refresher = new(DesktopDiscovery, targetProbe ?? (qa ? _ => Task.FromResult(TargetState.Unknown) : null));
@@ -56,18 +75,29 @@ internal sealed class V2Context : IAsyncDisposable
     }
     private void DataChanged(object? sender, EventArgs e) => dispatcher.BeginInvoke(() =>
     {
-        if (Closing) return;
+        if (Closing)
+            return;
         var next = Preferences;
-        if (applied.Theme != next.Theme) Design.Apply(next.Theme);
-        if (applied.Theme != next.Theme || applied.VisualQuality != next.VisualQuality || applied.Monitor != next.Monitor || applied.CalendarMonitor != next.CalendarMonitor) Graphics.Refresh();
-        applied = next; SyncCalendar(); Changed?.Invoke(this, EventArgs.Empty);
+        if (applied.Theme != next.Theme)
+            Design.Apply(next.Theme);
+        if (applied.Theme != next.Theme || applied.VisualQuality != next.VisualQuality || applied.Monitor != next.Monitor || applied.CalendarMonitor != next.CalendarMonitor)
+            Graphics.Refresh();
+        applied = next;
+        SyncCalendar();
+        Changed?.Invoke(this, EventArgs.Empty);
     });
     private void ThemeChanged(object sender, UserPreferenceChangedEventArgs e) => dispatcher.BeginInvoke(() => { if (!Closing) { Design.Apply(Preferences.Theme); Graphics.Refresh(); Changed?.Invoke(this, EventArgs.Empty); } });
     internal async Task Write(Action action)
     {
-        if (Closing) throw new InvalidOperationException("程序正在退出。");
+        if (Closing)
+            throw new InvalidOperationException("程序正在退出。");
         await writes.WaitAsync();
-        try { if (Closing) throw new InvalidOperationException("程序正在退出。"); await Task.Run(action); }
+        try
+        {
+            if (Closing)
+                throw new InvalidOperationException("程序正在退出。");
+            await Task.Run(action);
+        }
         finally { writes.Release(); }
     }
     internal async Task<DesktopRefreshResult> RefreshDesktop(CancellationToken token)
@@ -84,8 +114,10 @@ internal sealed class V2Context : IAsyncDisposable
     internal Task InitializeDesktopIcons() => Write(() => DesktopIcons.Initialize(Preferences.HideDesktopIcons));
     internal void SyncCalendar()
     {
-        if (Closing || Dock is not { IsLoaded: true }) return;
-        if (calendar is null && Preferences.DesktopCalendarVisible) calendar = new(this);
+        if (Closing || Dock is not { IsLoaded: true })
+            return;
+        if (calendar is null && Preferences.DesktopCalendarVisible)
+            calendar = new(this);
         calendar?.SyncVisibility();
     }
     internal Task SetCalendarVisible(bool visible) => Write(() => Db.Update(s => s.Preferences = s.Preferences with { DesktopCalendarVisible = visible }));
@@ -111,31 +143,59 @@ internal sealed class V2Context : IAsyncDisposable
         var result = await launcher.LaunchAsync(current);
         if (result.Success && !Closing && Db.Current.Entries.Any(e => e.Id == current.Id))
         {
-            try { await Write(() => Catalog.Touch(current.Id, DateTime.Now)); }
+            try
+            {
+                await Write(() => Catalog.Touch(current.Id, DateTime.Now));
+            }
             catch { /* A launched target must not be reported as failed because recents could not be saved. */ }
         }
         return result;
     }
     internal void OpenManager()
     {
-        if (Closing) return;
-        if (manager is null) { manager = new(this); manager.Closed += (_, _) => manager = null; }
-        if (manager.WindowState == WindowState.Minimized) manager.WindowState = WindowState.Normal;
-        manager.Show(); manager.Activate();
+        if (Closing)
+            return;
+        if (manager is null)
+        {
+            manager = new(this);
+            manager.Closed += (_, _) => manager = null;
+        }
+        if (manager.WindowState == WindowState.Minimized)
+            manager.WindowState = WindowState.Normal;
+        // Freeze the clean background before the management HWND is shown.
+        // Waiting for Loaded leaves a capture race with the appearing window.
+        Graphics.SetManagementOpen(true);
+        try
+        {
+            manager.Show();
+            manager.Activate();
+        }
+        catch { Graphics.SetManagementOpen(false); throw; }
     }
     internal Manager2Window? Manager => manager;
     internal Search2Window Search => search ??= new(this);
     internal void ToggleSearch()
     {
-        if (Closing) return;
-        if (Search.IsVisible) Search.Dismiss(true); else { Dock?.DismissPanel(); Search.Open(); }
+        if (Closing)
+            return;
+        if (Search.IsVisible)
+            Search.Dismiss(true);
+        else
+        {
+            Dock?.DismissPanel();
+            Search.Open();
+        }
     }
     internal async Task<(bool Success, string Error)> ChangeHotkey(SearchShortcut shortcut)
     {
-        if (Closing) return (false, "程序正在退出。");
-        if (!changingHotkey.IsCompleted) return (false, "正在保存快捷键。");
+        if (Closing)
+            return (false, "程序正在退出。");
+        if (!changingHotkey.IsCompleted)
+            return (false, "正在保存快捷键。");
         (bool Success, string Error) result = default;
-        changingHotkey = Change(); await changingHotkey; return result;
+        changingHotkey = Change();
+        await changingHotkey;
+        return result;
         async Task Change()
         {
             result = await hotkey.TryChangeAsync(shortcut, value => Write(() => Db.Update(s => s.Preferences = s.Preferences with { SearchHotkey = value })));
@@ -144,15 +204,25 @@ internal sealed class V2Context : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
-        Closing = true; Db.Changed -= DataChanged; SystemEvents.UserPreferenceChanged -= ThemeChanged;
+        Closing = true;
+        Db.Changed -= DataChanged;
+        SystemEvents.UserPreferenceChanged -= ThemeChanged;
         await changingHotkey;
-        hotkey.Dispose(); Discovery.Dispose(); DesktopDiscovery.Dispose();
-        manager?.Close(); search?.Close(); calendar?.Close(); Dock?.Close();
+        hotkey.Dispose();
+        Discovery.Dispose();
+        DesktopDiscovery.Dispose();
+        manager?.Close();
+        search?.Close();
+        calendar?.Close();
+        Dock?.Close();
         await Graphics.DisposeAsync();
         await writes.WaitAsync();
         try
         {
-            try { await DesktopIcons.DisposeAsync(); }
+            try
+            {
+                await DesktopIcons.DisposeAsync();
+            }
             finally { await Task.Run(Db.Dispose); }
         }
         finally { writes.Release(); }

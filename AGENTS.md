@@ -7,4 +7,5 @@
 - Run core and Windows service tests for relevant changes. Real WPF window tests must use DesktopHarness on an isolated desktop; never switch the user's desktop or run window-spawning tests on their active work surface.
 - Performance targets are measured, not inferred from successful compilation. Record the build, data scale and limitations of each result.
 - Install/update the same per-user location and shortcut; preserve user data and recovery records.
+- Before updating, take a current recovery snapshot after the app exits and verify entries, category membership/order, pins, calendar and preferences after startup. File hashes alone do not prove continuity with a previously running instance. Never import or restore user state as part of a visual change.
 - Maintain third-party notices and do not assign a license to the user's original work without their instruction.

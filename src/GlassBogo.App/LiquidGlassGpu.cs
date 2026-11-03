@@ -10,7 +10,8 @@ using Format = Vortice.DXGI.Format;
 namespace GlassBogo.App;
 
 // Independent GPU material for V2 desktop surfaces.
-// The owner must lock D3DImage before Render and detach its back buffer before Dispose.
+// Production reads completed BGRA frames. The optional legacy interop probe must
+// lock D3DImage before Render and detach its back buffer before Dispose.
 internal sealed class LiquidGlassGpu : IDisposable
 {
     [StructLayout(LayoutKind.Sequential)]
@@ -35,49 +36,76 @@ internal sealed class LiquidGlassGpu : IDisposable
     private AutoResetEvent? completionEvent;
     private readonly int width, height;
     private readonly bool ownsDriver;
+    private readonly bool sharedPresentation;
+    private ID3D11Texture2D? readback;
+    private byte[]? readbackPixels;
     private bool disposed;
     internal nint Surface => surface9!.NativePointer;
     internal ID3D11Texture2D Texture => shared!;
 
-    internal LiquidGlassGpu(ID3D11Device device, ID3D11DeviceContext context, long adapterLuid, nint hwnd, int width, int height, LiquidGlassGpu? resources = null)
+    internal LiquidGlassGpu(ID3D11Device device, ID3D11DeviceContext context, long adapterLuid, nint hwnd, int width, int height, LiquidGlassGpu? resources = null, bool sharedPresentation = true)
     {
-        this.context = context; this.width = width; this.height = height;
+        this.context = context;
+        this.width = width;
+        this.height = height;
         ownsDriver = resources is null;
+        this.sharedPresentation = resources?.sharedPresentation ?? sharedPresentation;
         try
         {
             if (resources is not null)
             {
-                device9 = resources.device9; vertex = resources.vertex; horizontal = resources.horizontal; glass = resources.glass;
-                sampler = resources.sampler; constants = resources.constants; complete = resources.complete;
-                context3 = resources.context3; completionEvent = resources.completionEvent;
+                device9 = resources.device9;
+                vertex = resources.vertex;
+                horizontal = resources.horizontal;
+                glass = resources.glass;
+                sampler = resources.sampler;
+                constants = resources.constants;
+                complete = resources.complete;
+                context3 = resources.context3;
+                completionEvent = resources.completionEvent;
             }
             else
             {
-            d3d9 = D3D9.Direct3DCreate9Ex();
-            uint index = 0;
-            for (; index < d3d9.AdapterCount; index++)
+                if (this.sharedPresentation)
+                {
+                    d3d9 = D3D9.Direct3DCreate9Ex();
+                    uint index = 0;
+                    for (; index < d3d9.AdapterCount; index++)
+                    {
+                        var luid = d3d9.GetAdapterLuid(index);
+                        if (((long)luid.HighPart << 32 | luid.LowPart) == adapterLuid)
+                            break;
+                    }
+                    if (index == d3d9.AdapterCount)
+                        throw new InvalidOperationException("D3D9Ex 与主屏 D3D11 适配器不匹配。");
+                    device9 = d3d9.CreateDeviceEx(index, DeviceType.Hardware, hwnd,
+                        CreateFlags.HardwareVertexProcessing | CreateFlags.Multithreaded | CreateFlags.FpuPreserve,
+                        new Vortice.Direct3D9.PresentParameters { Windowed = true, SwapEffect = Vortice.Direct3D9.SwapEffect.Discard, DeviceWindowHandle = hwnd, BackBufferWidth = 1, BackBufferHeight = 1 });
+                }
+                vertex = device.CreateVertexShader(Compiler.Compile(Shader, "Vertex", "LiquidGlass", "vs_5_0").Span);
+                horizontal = device.CreatePixelShader(Compiler.Compile(Shader, "Horizontal", "LiquidGlass", "ps_5_0").Span);
+                glass = device.CreatePixelShader(Compiler.Compile(Shader, "Glass", "LiquidGlass", "ps_5_0").Span);
+                sampler = device.CreateSamplerState(new SamplerDescription(Vortice.Direct3D11.Filter.MinMagMipLinear, TextureAddressMode.Clamp));
+                constants = device.CreateBuffer(80, BindFlags.ConstantBuffer);
+                complete = device.CreateQuery(new QueryDescription(Vortice.Direct3D11.QueryType.Event));
+                try
+                {
+                    context3 = context.QueryInterface<ID3D11DeviceContext3>();
+                    completionEvent = new(false);
+                }
+                catch (SharpGen.Runtime.SharpGenException) { /* Older compatible devices use the bounded query path. */ }
+            }
+            if (this.sharedPresentation)
             {
-                var luid = d3d9.GetAdapterLuid(index);
-                if (((long)luid.HighPart << 32 | luid.LowPart) == adapterLuid) break;
+                if (device9 is null)
+                    throw new InvalidOperationException("共享图形设备已释放。");
+                nint handle = 0;
+                texture9 = device9.CreateTexture((uint)width, (uint)height, 1, Vortice.Direct3D9.Usage.RenderTarget, Vortice.Direct3D9.Format.A8R8G8B8, Pool.Default, ref handle);
+                surface9 = texture9.GetSurfaceLevel(0);
+                shared = device.OpenSharedResource<ID3D11Texture2D>(handle);
             }
-            if (index == d3d9.AdapterCount) throw new InvalidOperationException("D3D9Ex 与主屏 D3D11 适配器不匹配。");
-            device9 = d3d9.CreateDeviceEx(index, DeviceType.Hardware, hwnd,
-                CreateFlags.HardwareVertexProcessing | CreateFlags.Multithreaded | CreateFlags.FpuPreserve,
-                new Vortice.Direct3D9.PresentParameters { Windowed = true, SwapEffect = Vortice.Direct3D9.SwapEffect.Discard, DeviceWindowHandle = hwnd, BackBufferWidth = 1, BackBufferHeight = 1 });
-            vertex = device.CreateVertexShader(Compiler.Compile(Shader, "Vertex", "LiquidGlass", "vs_5_0").Span);
-            horizontal = device.CreatePixelShader(Compiler.Compile(Shader, "Horizontal", "LiquidGlass", "ps_5_0").Span);
-            glass = device.CreatePixelShader(Compiler.Compile(Shader, "Glass", "LiquidGlass", "ps_5_0").Span);
-            sampler = device.CreateSamplerState(new SamplerDescription(Vortice.Direct3D11.Filter.MinMagMipLinear, TextureAddressMode.Clamp));
-            constants = device.CreateBuffer(80, BindFlags.ConstantBuffer);
-            complete = device.CreateQuery(new QueryDescription(Vortice.Direct3D11.QueryType.Event));
-            try { context3 = context.QueryInterface<ID3D11DeviceContext3>(); completionEvent = new(false); }
-            catch (SharpGen.Runtime.SharpGenException) { /* Older compatible devices use the bounded query path. */ }
-            }
-            if (device9 is null) throw new InvalidOperationException("共享图形设备已释放。");
-            nint handle = 0;
-            texture9 = device9.CreateTexture((uint)width, (uint)height, 1, Vortice.Direct3D9.Usage.RenderTarget, Vortice.Direct3D9.Format.A8R8G8B8, Pool.Default, ref handle);
-            surface9 = texture9.GetSurfaceLevel(0);
-            shared = device.OpenSharedResource<ID3D11Texture2D>(handle);
+            else
+                shared = device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)width, (uint)height, 1, 1, BindFlags.RenderTarget | BindFlags.ShaderResource));
             outputView = device.CreateRenderTargetView(shared);
             blur = device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)width, (uint)height, 1, 1, BindFlags.RenderTarget | BindFlags.ShaderResource));
             blurView = device.CreateRenderTargetView(blur);
@@ -86,12 +114,38 @@ internal sealed class LiquidGlassGpu : IDisposable
         catch { Dispose(); throw; }
     }
 
+    // Reuse staging storage on the serialized worker. Callers create an owned,
+    // immutable bitmap before this array is used by the next frame.
+    internal byte[] ReadFrame(ID3D11Device device)
+    {
+        readback ??= device.CreateTexture2D(shared!.Description with
+        {
+            BindFlags = BindFlags.None,
+            MiscFlags = ResourceOptionFlags.None,
+            Usage = ResourceUsage.Staging,
+            CPUAccessFlags = CpuAccessFlags.Read
+        });
+        readbackPixels ??= new byte[checked(width * height * 4)];
+        context.CopyResource(readback, shared!);
+        var mapped = context.Map(readback, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        try
+        {
+            for (var y = 0; y < height; y++)
+                Marshal.Copy(mapped.DataPointer + checked((int)(y * mapped.RowPitch)), readbackPixels, y * width * 4, width * 4);
+        }
+        finally { context.Unmap(readback, 0); }
+        return readbackPixels;
+    }
+
     internal void Render(ID3D11Device device, ID3D11Texture2D frame, Vector4 sourceRect, Vector2 pointer, bool dark, bool reduced, float radius = 24, int rotation = 0)
     {
         var p = new Parameters
         {
-            SourceRect = sourceRect, Shape = new(width, height, radius, reduced ? 0 : 1), Mapping = new(rotation, 0, 0, 0),
-            Pointer = new(pointer.X, pointer.Y, 0, 0), Tint = dark ? new(.07f, .10f, .16f, .16f) : new(.96f, .98f, 1, .10f)
+            SourceRect = sourceRect,
+            Shape = new(width, height, radius, reduced ? 0 : 1),
+            Mapping = new(rotation, 0, 0, 0),
+            Pointer = new(pointer.X, pointer.Y, 0, 0),
+            Tint = dark ? new(.07f, .10f, .16f, .16f) : new(.96f, .98f, 1, .10f)
         };
         context.UpdateSubresource(in p, constants!);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
@@ -116,31 +170,51 @@ internal sealed class LiquidGlassGpu : IDisposable
         context.End(complete!);
         if (context3 is not null && completionEvent is not null)
         {
-            completionEvent.Reset(); context3.Flush1(ContextType.All, completionEvent.SafeWaitHandle.DangerousGetHandle());
-            if (!completionEvent.WaitOne(1000)) throw new TimeoutException("玻璃 GPU 完成事件超时。");
+            completionEvent.Reset();
+            context3.Flush1(ContextType.All, completionEvent.SafeWaitHandle.DangerousGetHandle());
+            if (!completionEvent.WaitOne(1000))
+                throw new TimeoutException("玻璃 GPU 完成事件超时。");
         }
-        else context.Flush();
+        else
+            context.Flush();
         // D3DImage consumes the D3D9Ex shared surface on a different device.
         // A bounded fence prevents presenting unfinished D3D11 work.
         var watch = System.Diagnostics.Stopwatch.StartNew();
         while (!context.GetData(complete!, out int ready) || ready == 0)
         {
-            if (watch.ElapsedMilliseconds > 1000) throw new TimeoutException("玻璃 GPU 帧未在一秒内完成。");
+            if (watch.ElapsedMilliseconds > 1000)
+                throw new TimeoutException("玻璃 GPU 帧未在一秒内完成。");
             Thread.Sleep(1);
         }
     }
 
     public void Dispose()
     {
-        if (disposed) return; disposed = true;
-        blurInput?.Dispose(); blurView?.Dispose(); outputView?.Dispose();
-        blur?.Dispose(); shared?.Dispose(); surface9?.Dispose(); texture9?.Dispose();
+        if (disposed)
+            return;
+        disposed = true;
+        blurInput?.Dispose();
+        blurView?.Dispose();
+        outputView?.Dispose();
+        readback?.Dispose();
+        if (readbackPixels is not null)
+            Array.Clear(readbackPixels);
+        blur?.Dispose();
+        shared?.Dispose();
+        surface9?.Dispose();
+        texture9?.Dispose();
         if (ownsDriver)
         {
-            complete?.Dispose(); constants?.Dispose(); sampler?.Dispose();
-            context3?.Dispose(); completionEvent?.Dispose();
-            glass?.Dispose(); horizontal?.Dispose(); vertex?.Dispose();
-            device9?.Dispose(); d3d9?.Dispose();
+            complete?.Dispose();
+            constants?.Dispose();
+            sampler?.Dispose();
+            context3?.Dispose();
+            completionEvent?.Dispose();
+            glass?.Dispose();
+            horizontal?.Dispose();
+            vertex?.Dispose();
+            device9?.Dispose();
+            d3d9?.Dispose();
         }
     }
 

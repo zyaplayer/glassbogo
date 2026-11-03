@@ -12,11 +12,20 @@ internal sealed class DesktopCapture : IDisposable
     internal ID3D11Device Device { get; private set; } = null!;
     internal ID3D11DeviceContext Context { get; private set; } = null!;
     internal string AdapterName { get; private set; } = "";
-    internal long AdapterLuid { get; private set; }
-    internal OutputDescription Output { get; private set; }
+    internal long AdapterLuid
+    {
+        get; private set;
+    }
+    internal OutputDescription Output
+    {
+        get; private set;
+    }
     private IDXGIOutputDuplication? duplication;
     private bool held;
-    internal OutduplFrameInfo FrameInfo { get; private set; }
+    internal OutduplFrameInfo FrameInfo
+    {
+        get; private set;
+    }
 
     internal DesktopCapture(string displayName, bool duplicate = true)
     {
@@ -32,7 +41,8 @@ internal sealed class DesktopCapture : IDisposable
                     {
                         using (output)
                         {
-                            if (output.Description.DeviceName != displayName) continue;
+                            if (output.Description.DeviceName != displayName)
+                                continue;
                             Output = output.Description;
                             AdapterName = adapter.Description1.Description;
                             AdapterLuid = adapter.Description1.Luid;
@@ -61,16 +71,27 @@ internal sealed class DesktopCapture : IDisposable
     {
         Release();
         var result = duplication!.AcquireNextFrame(timeoutMilliseconds, out var info, out var resource);
-        if (result.Code == unchecked((int)0x887A0027)) return null; // WAIT_TIMEOUT
+        if (result.Code == unchecked((int)0x887A0027))
+            return null; // WAIT_TIMEOUT
         result.CheckError();
         FrameInfo = info;
         held = true;
-        using (resource) return resource.QueryInterface<ID3D11Texture2D>();
+        using (resource)
+        {
+            var texture = resource.QueryInterface<ID3D11Texture2D>();
+            if (texture.Description.Format != Format.B8G8R8A8_UNorm)
+            {
+                texture.Dispose();
+                throw new InvalidDataException("桌面采样格式不兼容，保留上一完整材质。");
+            }
+            return texture;
+        }
     }
 
     internal void Release()
     {
-        if (!held) return;
+        if (!held)
+            return;
         held = false;
         duplication!.ReleaseFrame().CheckError();
     }
@@ -100,18 +121,34 @@ internal sealed class DesktopCapture : IDisposable
 
     public void Dispose()
     {
-        if (held) { held = false; duplication?.ReleaseFrame(); }
-        duplication?.Dispose(); duplication = null;
-        Context?.ClearState(); Context?.Dispose();
+        if (held)
+        {
+            held = false;
+            duplication?.ReleaseFrame();
+        }
+        duplication?.Dispose();
+        duplication = null;
+        Context?.ClearState();
+        Context?.Dispose();
         Device?.Dispose();
     }
 }
 
 internal sealed class DesktopCaptureException : Exception
 {
-    internal string Stage { get; }
-    internal string Adapter { get; }
+    internal string Stage
+    {
+        get;
+    }
+    internal string Adapter
+    {
+        get;
+    }
     internal DesktopCaptureException(string stage, string adapter, Exception inner)
         : base($"{stage} ({adapter}): {inner.Message}", inner)
-    { Stage = stage; Adapter = adapter; HResult = inner.HResult; }
+    {
+        Stage = stage;
+        Adapter = adapter;
+        HResult = inner.HResult;
+    }
 }
