@@ -219,6 +219,7 @@ internal sealed class Manager2Window : LiquidWindow
         {
             var savedValue = selected;
             var combo = new ComboBox { ItemsSource = values, DisplayMemberPath = "Label", SelectedValuePath = "Value", SelectedValue = selected, Width = 190, Margin = new(12, 6, 0, 6) };
+            System.Windows.Automation.AutomationProperties.SetName(combo, title);
             combo.SelectionChanged += async (_, _) => { if (!combo.IsEnabled) return; combo.IsEnabled = false; try { var value = (string)combo.SelectedValue; await save(value); savedValue = value; } catch (Exception ex) { combo.SelectedValue = savedValue; Design.Error(ex); } finally { combo.IsEnabled = true; } };
             panel.Children.Add(Design.Row(V2Ui.Label(title), combo));
         }

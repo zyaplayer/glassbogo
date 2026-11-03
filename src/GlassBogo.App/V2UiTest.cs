@@ -162,6 +162,7 @@ internal static class V2UiTest
                 overflowClose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(!dock.Panel.IsVisible && OutsideClick.ActiveCount == 0, "overflow panel has a working explicit close button");
 
+                await VerifySettingsDisplaySwitch(ctx, Check);
                 await VerifyDisplays(ctx, Check);
                 await VerifyEditor(dock, ctx, Check);
 
@@ -972,6 +973,74 @@ internal static class V2UiTest
         calendar.SelectDate(selected);
         check(true, "calendar handles boundary years without drawing dates outside the valid range");
     }
+    private static async Task VerifySettingsDisplaySwitch(V2Context ctx, Action<bool, string> check)
+    {
+        var screens = Display.AllScreens;
+        if (screens.Length < 2)
+            return;
+        var primary = Display.PrimaryScreen;
+        var other = screens.First(s => !s.Primary);
+        var saved = ctx.Preferences;
+        var dock = ctx.Dock!;
+        static bool Color(LiquidWindow window, bool blue)
+        {
+            if (window.Material is not { } bitmap)
+                return false;
+            var p = new byte[4];
+            bitmap.CopyPixels(new Int32Rect(bitmap.PixelWidth / 2, bitmap.PixelHeight / 2, 1, 1), p, 4, 0);
+            return blue ? p[0] > p[2] + 100 : p[2] > p[0] + 100;
+        }
+        try
+        {
+            ctx.Graphics.SetQaOutputColor(primary.DeviceName, 0xE02020);
+            ctx.Graphics.SetQaOutputColor(other.DeviceName, 0x2040E0);
+            await Until(() => Color(dock, false) && !dock.MaterialDirty);
+            ctx.OpenManager();
+            var manager = ctx.Manager!;
+            await Until(() => ctx.Graphics.ScreenshotReady);
+            manager.ShowPage("settings");
+            manager.UpdateLayout();
+            var combo = Walk(manager).OfType<ComboBox>().Single(c => System.Windows.Automation.AutomationProperties.GetName(c) == "底栏显示器");
+            ctx.Graphics.FailCapturesForQa = 1;
+            combo.SelectedValue = other.DeviceName;
+            try
+            {
+                await Until(() => combo.IsEnabled && ctx.Preferences.Monitor == other.DeviceName && dock.CommittedStamp?.Display == other.DeviceName && Color(dock, true) && !dock.MaterialDirty && ctx.Graphics.ScreenshotReady);
+            }
+            catch (Exception ex) { throw new InvalidOperationException("Settings monitor switch lost glass: " + ctx.Graphics.DebugState, ex); }
+            check(manager.IsVisible && dock.EffectiveVisualMode == "强视觉", "settings monitor combo acquires the previously unused output without closing management");
+            check(ctx.Graphics.FailCapturesForQa == 0 && ctx.Graphics.LastFailure is null && Affinity(manager) == 0 && Affinity(dock) == 0, "a failed settings-switch capture retries automatically and restores screenshot eligibility");
+            ctx.Graphics.FailCapturesForQa = 1;
+            Walk(manager).OfType<Button>().Single(b => b.Content as string == "重试视觉效果").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await Until(() => ctx.Graphics.FailCapturesForQa == 0 && ctx.Graphics.ScreenshotReady && ctx.Graphics.LastFailure is null && Color(dock, true) && !dock.MaterialDirty);
+            check(true, "visual retry in open settings reacquires a clean background and recovers a failed capture without another UI action");
+            foreach (var destination in new[] { primary, other, primary, other })
+            {
+                combo.SelectedValue = destination.DeviceName;
+                await Until(() => combo.IsEnabled && ctx.Preferences.Monitor == destination.DeviceName && dock.CommittedStamp?.Display == destination.DeviceName && Color(dock, !destination.Primary) && !dock.MaterialDirty && ctx.Graphics.ScreenshotReady);
+            }
+            check(manager.IsVisible && dock.EffectiveVisualMode == "强视觉", "four additional monitor combo changes retain the correct red/blue material while settings stays open");
+            var calendarCombo = Walk(manager).OfType<ComboBox>().Single(c => System.Windows.Automation.AutomationProperties.GetName(c) == "日历显示器");
+            calendarCombo.SelectedValue = primary.DeviceName;
+            await Until(() => calendarCombo.IsEnabled && ctx.CalendarWindow!.CommittedStamp?.Display == primary.DeviceName && Color(ctx.CalendarWindow!, false) && !ctx.CalendarWindow!.MaterialDirty && ctx.Graphics.ScreenshotReady);
+            check(Color(dock, true), "calendar monitor combo rebuilds its own glass while the dock stays on the other output");
+            dock.ShowCategory("qa-cat-0", false);
+            await Until(() => dock.Panel.CommittedStamp?.Display == other.DeviceName && Color(dock.Panel, true) && !dock.Panel.MaterialDirty);
+            check(dock.Panel.EffectiveVisualMode == "强视觉", "category glass can reveal on the newly selected monitor before management closes");
+            dock.DismissPanel();
+            manager.Close();
+            await Until(() => dock.ExcludedFromCapture && !ctx.Graphics.ScreenshotReady && Color(dock, true) && !dock.MaterialDirty);
+            check(true, "closing settings resumes excluded live rendering on the selected output");
+        }
+        finally
+        {
+            if (ctx.Manager is { } manager)
+                manager.Close();
+            await ctx.Write(() => ctx.Db.Update(s => s.Preferences = saved));
+            ctx.Graphics.SetQaBackground(null);
+        }
+        await Until(() => !dock.MaterialDirty);
+    }
     private static async Task VerifyDisplays(V2Context ctx, Action<bool, string> check)
     {
         var screens = Display.AllScreens;
@@ -1110,13 +1179,13 @@ internal static class V2UiTest
                 await Until(() => (red ? Red(dock) : Blue(dock)) && (red ? Red(dock.Panel) : Blue(dock.Panel)) && !dock.MaterialDirty && !dock.Panel.MaterialDirty);
                 var image = dock.Panel.Material!;
                 for (var y = 1; y <= 3; y++)
-                for (var x = 1; x <= 5; x++)
-                {
-                    var pixel = new byte[4];
-                    image.CopyPixels(new Int32Rect(image.PixelWidth * x / 6, image.PixelHeight * y / 4, 1, 1), pixel, 4, 0);
-                    if (pixel[3] < 248 || (red ? pixel[2] <= pixel[0] + 100 : pixel[0] <= pixel[2] + 100))
-                        throw new InvalidOperationException("Synthetic material contains an uninitialized or cross-frame color block.");
-                }
+                    for (var x = 1; x <= 5; x++)
+                    {
+                        var pixel = new byte[4];
+                        image.CopyPixels(new Int32Rect(image.PixelWidth * x / 6, image.PixelHeight * y / 4, 1, 1), pixel, 4, 0);
+                        if (pixel[3] < 248 || (red ? pixel[2] <= pixel[0] + 100 : pixel[0] <= pixel[2] + 100))
+                            throw new InvalidOperationException("Synthetic material contains an uninitialized or cross-frame color block.");
+                    }
                 dock.DismissPanel();
             }
             check(fallbackFrames == 0, "twelve rapid category reveal/color cycles have no fallback flashes or cross-frame color blocks at fifteen interior sample points");
@@ -1351,7 +1420,7 @@ internal static class V2UiTest
     {
         yield return root;
         for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-        foreach (var child in Walk(VisualTreeHelper.GetChild(root, i)))
-            yield return child;
+            foreach (var child in Walk(VisualTreeHelper.GetChild(root, i)))
+                yield return child;
     }
 }

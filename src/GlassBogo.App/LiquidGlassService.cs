@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using System.Windows.Media.Imaging;
 using Vortice.Direct3D11;
@@ -43,6 +44,9 @@ internal sealed class LiquidGlassService : IAsyncDisposable
     private Task pending = Task.CompletedTask;
     private Task managementChange = Task.CompletedTask;
     private bool managementOpen;
+    private bool capturingManagement;
+    private bool managementBackgroundReady;
+    private DateTime managementRetryAt;
     private long generation;
     private bool wakeQueued;
     private int managementVersion;
@@ -179,8 +183,8 @@ internal sealed class LiquidGlassService : IAsyncDisposable
             return;
         }
         clients.Add(client);
-        client.ExcludedFromCapture = !managementOpen && (qa || SetWindowDisplayAffinity(client.Handle, 0x11));
-        if (managementOpen)
+        client.ExcludedFromCapture = (!managementOpen || capturingManagement) && (qa || SetWindowDisplayAffinity(client.Handle, 0x11));
+        if (managementOpen && !capturingManagement)
             SetWindowDisplayAffinity(client.Handle, 0);
         if (!client.ExcludedFromCapture)
             client.SetMaterialVisible(false, "兼容模式");
@@ -188,7 +192,7 @@ internal sealed class LiquidGlassService : IAsyncDisposable
     }
     internal void Remove(LiquidWindow client)
     {
-        // Tick owns any D3DImage lock. Detach only after that tick releases it.
+        // Wait for any queued material work before removing its renderer.
         _ = RemoveAsync(client);
     }
     private async Task RemoveAsync(LiquidWindow client)
@@ -212,6 +216,12 @@ internal sealed class LiquidGlassService : IAsyncDisposable
     }
     private void StartTick()
     {
+        if (managementOpen && managementRetryAt != default)
+        {
+            if (!closing && !releasing && managementChange.IsCompleted && DateTime.UtcNow >= managementRetryAt)
+                Refresh();
+            return;
+        }
         if (pending.IsCompleted && !closing && !releasing)
             pending = Tick();
     }
@@ -220,6 +230,8 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         if (closing || managementOpen == open)
             return;
         managementOpen = open;
+        managementBackgroundReady = false;
+        managementRetryAt = default;
         generation++;
         ScreenshotReady = false;
         timer.Stop();
@@ -290,16 +302,166 @@ internal sealed class LiquidGlassService : IAsyncDisposable
                     client.ClearRetained();
                     client.SetMaterialVisible(false, preferences().VisualQuality == "off" ? "已关闭" : "兼容模式");
                 }
-                else if (!client.ShowRetained("底栏画面已冻结，可截图"))
-                    client.SetMaterialVisible(false, "等待底栏更新");
                 continue;
             }
             client.ExcludedFromCapture = qa || SetWindowDisplayAffinity(client.Handle, 0x11);
             if (!client.ExcludedFromCapture)
                 client.SetMaterialVisible(false, "兼容模式");
         }
+        if (managementOpen && sessionActive && preferences().VisualQuality != "off" && GlassEnvironment.Transparency)
+        {
+            ScreenshotReady = false;
+            Status = "正在更新切屏背景";
+            managementBackgroundReady = false;
+            managementRetryAt = default;
+            timer.Stop();
+            var version = ++managementVersion;
+            managementChange = RefreshManagementBackground(managementChange, version);
+            return;
+        }
         reset = !managementOpen;
         Wake();
+    }
+    private async Task RefreshManagementBackground(Task previous, int version)
+    {
+        var restore = new List<(Window Window, nint Handle, uint Affinity)>();
+        var errors = new List<string>();
+        var restored = true;
+        try
+        {
+            await previous;
+            await pending;
+            if (closing || !managementOpen || version != managementVersion)
+                return;
+            releasing = capturingManagement = true;
+            foreach (Window window in Application.Current.Windows)
+            {
+                var handle = new WindowInteropHelper(window).Handle;
+                if (!window.IsVisible || handle == 0)
+                    continue;
+                var queried = GetWindowDisplayAffinity(handle, out var affinity);
+                if (!queried)
+                    throw new InvalidOperationException("无法保存窗口采样状态。");
+                restore.Add((window, handle, affinity));
+                if (!SetWindowDisplayAffinity(handle, 0x11) || !GetWindowDisplayAffinity(handle, out var excluded) || excluded != 0x11)
+                    throw new InvalidOperationException("无法安全排除窗口，保留原材质并重试。");
+            }
+            var displays = Display.AllScreens.Select(d => d.DeviceName).ToArray();
+            var palette = new Dictionary<string, uint>(qaOutputColors, StringComparer.OrdinalIgnoreCase);
+            var color = qaBackground;
+            var sceneVersion = qaSceneVersion;
+            await OnGpu(() =>
+            {
+                if (!qa)
+                    Marshal.ThrowExceptionForHR(DwmFlush());
+                foreach (var stale in outputs.Keys.Where(d => !displays.Contains(d, StringComparer.OrdinalIgnoreCase)).ToArray())
+                    DropOutput(stale);
+                foreach (var display in displays)
+                {
+                    try
+                    {
+                        DropOutput(display);
+                        if (qa && FailCapturesForQa > 0)
+                        {
+                            FailCapturesForQa--;
+                            throw new IOException("QA management background capture interruption");
+                        }
+                        var output = new OutputGpu(new DesktopCapture(display, duplicate: !qa));
+                        outputs[display] = output;
+                        var capture = output.Capture;
+                        if (qa)
+                        {
+                            var r = capture.Output.DesktopCoordinates;
+                            var w = r.Right - r.Left;
+                            var h = r.Bottom - r.Top;
+                            output.Synthetic = capture.Device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)w, (uint)h, 1, 1, BindFlags.ShaderResource));
+                            var rgb = palette.TryGetValue(display, out var perDisplay) ? perDisplay : color;
+                            var pixels = new byte[checked(w * h * 4)];
+                            for (var y = 0; y < h; y++)
+                            for (var x = 0; x < w; x++)
+                            {
+                                var at = (y * w + x) * 4;
+                                pixels[at] = rgb is { } b ? (byte)b : (byte)(40 + x / 32 % 2 * 100);
+                                pixels[at + 1] = rgb is { } g ? (byte)(g >> 8) : (byte)(80 + y / 32 % 2 * 80);
+                                pixels[at + 2] = rgb is { } red ? (byte)(red >> 16) : (byte)80;
+                                pixels[at + 3] = 255;
+                            }
+                            capture.Context.UpdateSubresource<byte>(pixels, output.Synthetic, 0, (uint)w * 4);
+                            Array.Clear(pixels);
+                            output.SceneVersion = sceneVersion;
+                        }
+                        else
+                        {
+                            for (var attempt = 0; attempt < 8 && output.DesktopCache is null; attempt++)
+                            {
+                                try
+                                {
+                                    using var frame = capture.Acquire(25);
+                                    if (frame is null)
+                                        continue;
+                                    output.DesktopCache = capture.Device.CreateTexture2D(frame.Description with
+                                    {
+                                        BindFlags = BindFlags.ShaderResource,
+                                        MiscFlags = ResourceOptionFlags.None
+                                    });
+                                    capture.Context.CopyResource(output.DesktopCache, frame);
+                                    // Retain the clean capture lease until the copy is
+                                    // complete, before restoring screenshot eligibility.
+                                    using var copied = capture.Device.CreateQuery(new QueryDescription(Vortice.Direct3D11.QueryType.Event));
+                                    capture.Context.End(copied); capture.Context.Flush();
+                                    var wait = System.Diagnostics.Stopwatch.StartNew();
+                                    while (!capture.Context.GetData(copied, out int complete) || complete == 0)
+                                    {
+                                        if (wait.ElapsedMilliseconds > 1000) throw new TimeoutException("切屏背景复制未完成，保留原材质并重试。");
+                                        Thread.Sleep(1);
+                                    }
+                                }
+                                finally { capture.Release(); }
+                            }
+                            if (output.DesktopCache is null)
+                                throw new IOException("新显示器背景尚未就绪。");
+                        }
+                        output.Changed = true;
+                        retries.Remove(display);
+                    }
+                    catch (Exception ex) { errors.Add(display + ": " + ex.Message); DropOutput(display); }
+                }
+            });
+        }
+        catch (Exception ex) { errors.Add(ex.Message); }
+        finally
+        {
+            foreach (var item in restore)
+                if (IsWindow(item.Handle) && GetWindowThreadProcessId(item.Handle, out var owner) != 0 && owner == Environment.ProcessId && item.Window is not LiquidWindow { UsesGlass: true })
+                    restored &= SetWindowDisplayAffinity(item.Handle, item.Affinity);
+            foreach (var client in clients.Where(c => !c.Removed && IsWindow(c.Handle)))
+            {
+                var affinity = managementOpen ? 0u : 0x11u;
+                var allowed = SetWindowDisplayAffinity(client.Handle, affinity);
+                restored &= allowed || qa;
+                client.ExcludedFromCapture = !managementOpen && (allowed || qa);
+                client.MaterialDirty = true;
+            }
+            capturingManagement = releasing = false;
+            if (!closing && managementOpen && version == managementVersion)
+            {
+                managementBackgroundReady = restored && errors.Count == 0;
+                ScreenshotReady = false;
+                if (!managementBackgroundReady)
+                {
+                    LastFailure = string.Join("; ", errors);
+                    Status = "正在重试切屏背景";
+                    managementRetryAt = DateTime.UtcNow.AddMilliseconds(500);
+                }
+                else
+                {
+                    LastFailure = null;
+                    Status = "正在呈现切屏玻璃";
+                }
+            }
+            if (!closing)
+                Wake();
+        }
     }
     private void Post(Action action)
     {
@@ -387,15 +549,16 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         if (!enabled || visible.Length == 0)
         {
             timer.Stop();
+            if (enabled && managementOpen && managementBackgroundReady) { ScreenshotReady = true; managementBackgroundReady = false; }
             if (enabled)
                 await PreserveVisibleFrames();
             else
-            foreach (var client in clients)
-            {
-                client.ClearRetained();
-                client.MaterialImage.Source = null;
-                client.SetMaterialVisible(false, settings.VisualQuality == "off" ? "已关闭" : "兼容模式");
-            }
+                foreach (var client in clients)
+                {
+                    client.ClearRetained();
+                    client.MaterialImage.Source = null;
+                    client.SetMaterialVisible(false, settings.VisualQuality == "off" ? "已关闭" : "兼容模式");
+                }
             if (managementOpen && enabled)
                 await OnGpu(ReleaseSurfaces);
             else
@@ -461,14 +624,14 @@ internal sealed class LiquidGlassService : IAsyncDisposable
                             var pixels = new byte[checked(w * h * 4)];
                             var rgb = palette.TryGetValue(display, out var outputColor) ? outputColor : qaBackground;
                             for (var y = 0; y < h; y++)
-                            for (var x = 0; x < w; x++)
-                            {
-                                var at = (y * w + x) * 4;
-                                pixels[at] = rgb is { } color ? (byte)color : (byte)(40 + x / 32 % 2 * 100);
-                                pixels[at + 1] = rgb is { } green ? (byte)(green >> 8) : (byte)(80 + y / 32 % 2 * 80);
-                                pixels[at + 2] = rgb is { } red ? (byte)(red >> 16) : (byte)80;
-                                pixels[at + 3] = 255;
-                            }
+                                for (var x = 0; x < w; x++)
+                                {
+                                    var at = (y * w + x) * 4;
+                                    pixels[at] = rgb is { } color ? (byte)color : (byte)(40 + x / 32 % 2 * 100);
+                                    pixels[at + 1] = rgb is { } green ? (byte)(green >> 8) : (byte)(80 + y / 32 % 2 * 80);
+                                    pixels[at + 2] = rgb is { } red ? (byte)(red >> 16) : (byte)80;
+                                    pixels[at + 3] = 255;
+                                }
                             capture.Context.UpdateSubresource<byte>(pixels, output.Synthetic, 0, (uint)w * 4);
                             Array.Clear(pixels);
                             output.SceneVersion = qaSceneVersion;
@@ -617,6 +780,10 @@ internal sealed class LiquidGlassService : IAsyncDisposable
                 LastFailure = null;
                 Status = managementOpen ? "背景已冻结，材质可随窗口更新" : settings.VisualQuality == "reduced" ? "降低效果" : "强视觉";
             }
+            if (managementOpen && managementBackgroundReady && visible.All(c => !c.MaterialDirty && c.CommittedStamp is { } stamp && TryStamp(c, preferences(), out var current) && stamp == current))
+            {
+                ScreenshotReady = true; managementBackgroundReady = false; Status = "切屏玻璃已就绪，可截图";
+            }
             if (!backgroundChanged && visible.All(c => !c.MaterialDirty && (c.Attached || c.FrozenMaterial)))
             {
                 await FreezeIdle(visible);
@@ -704,5 +871,8 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         await ReleaseGraphics();
     }
     [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowDisplayAffinity(nint hwnd, uint affinity);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowDisplayAffinity(nint hwnd, out uint affinity);
+    [DllImport("user32.dll")] private static extern bool IsWindow(nint hwnd);
+    [DllImport("dwmapi.dll")] private static extern int DwmFlush();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
 }
