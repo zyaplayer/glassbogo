@@ -30,6 +30,7 @@ internal sealed class Dock2Window : LiquidWindow
     private Category[] renderedCategories = [];
     private double renderedIconSize;
     private int renderedIconRevision = -1;
+    private string? renderedMonitor;
     private TextBlock panelStatus = V2Ui.Label("", 12, "Warning");
     internal DockSections? Layout { get; private set; }
     internal Dock2Window(V2Context ctx) : base(ctx.Graphics, glass: true)
@@ -37,7 +38,7 @@ internal sealed class Dock2Window : LiquidWindow
         this.ctx = ctx; ctx.Dock = this;
         Title = "GlassBogo Dock"; ShowInTaskbar = false; ShowActivated = false; Topmost = false;
         Body.Margin = new(-4); Body.Content = strip;
-        Panel = new(ctx.Graphics) { Title = "GlassBogo 分类", ShowInTaskbar = false, ShowActivated = false, Topmost = false };
+        Panel = new(ctx.Graphics, glass: true) { Title = "GlassBogo 分类", ShowInTaskbar = false, ShowActivated = false, Topmost = false };
         Panel.MouseEnter += (_, _) => { Interaction.Stay(); closeTimer.Stop(); };
         Panel.MouseLeave += (_, _) => ScheduleClose();
         MouseEnter += (_, _) => closeTimer.Stop(); MouseLeave += (_, _) => { openTimer.Stop(); ScheduleClose(); };
@@ -76,7 +77,7 @@ internal sealed class Dock2Window : LiquidWindow
     }
     private void Changed(object? sender, EventArgs e)
     {
-        if (renderedIconSize == ctx.IconSize && renderedIconRevision == ctx.IconRevision && renderedCategories.SequenceEqual(ctx.Db.Current.Categories) && renderedEntries.SequenceEqual(ctx.Db.Current.Entries.Select(entry => entry with { LastUsed = null }))) return;
+        if (renderedMonitor == ctx.DockScreen.DeviceName && renderedIconSize == ctx.IconSize && renderedIconRevision == ctx.IconRevision && renderedCategories.SequenceEqual(ctx.Db.Current.Categories) && renderedEntries.SequenceEqual(ctx.Db.Current.Entries.Select(entry => entry with { LastUsed = null }))) return;
         pages.Clear(); Render();
     }
     private void DisplayChanged(object? sender, EventArgs e) => Dispatcher.BeginInvoke(Render);
@@ -84,11 +85,13 @@ internal sealed class Dock2Window : LiquidWindow
     {
         if (ctx.Closing) return;
         renderedEntries = ctx.Db.Current.Entries.Select(entry => entry with { LastUsed = null }).ToArray(); renderedCategories = ctx.Db.Current.Categories.ToArray(); renderedIconSize = ctx.IconSize; renderedIconRevision = ctx.IconRevision;
-        var screen = Display.PrimaryScreen; var work = screen.WorkingArea; var scale = screen.Scale; var size = ctx.IconSize;
+        var screen = ctx.DockScreen; var work = screen.WorkingArea; var scale = screen.Scale; var size = ctx.IconSize;
+        renderedMonitor = screen.DeviceName;
+        ApplyDisplayLimits(screen);
         var pinned = ctx.Catalog.Pinned().ToArray(); var categories = ctx.Db.Current.Categories.ToArray();
         Layout = DockSections.Measure(work.Width / scale, size, pinned.Length, categories.Length);
         Width = Layout.Width; Height = Math.Min(size + 50, work.Height / scale - 12);
-        Left = (work.Left + (work.Width - Width * scale) / 2) / scale; Top = Math.Max(work.Top / scale, work.Bottom / scale - Height - 12);
+        PlaceOn(screen, (work.Left + (work.Width - Width * scale) / 2) / scale, Math.Max(work.Top / scale, work.Bottom / scale - Height - 12));
         strip.Children.Clear(); strip.ColumnDefinitions.Clear(); anchors.Clear();
         strip.ColumnDefinitions.Add(new() { Width = new(Layout.PinnedWidth) }); strip.ColumnDefinitions.Add(new() { Width = new(Layout.CategoryWidth) }); strip.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         var pins = new StackPanel { Orientation = Orientation.Horizontal, ClipToBounds = true };
@@ -213,12 +216,15 @@ internal sealed class Dock2Window : LiquidWindow
     }
     private void PlacePanel()
     {
-        var screen = Display.PrimaryScreen; var work = screen.WorkingArea; var scale = screen.Scale;
+        var screen = ctx.DockScreen; var work = screen.WorkingArea; var scale = screen.Scale;
+        Panel.ApplyDisplayLimits(screen);
         Panel.Width = Math.Min(472, work.Width / scale - 16); Panel.Height = Math.Min(396, work.Height / scale * .7);
-        var pos = anchor is { IsLoaded: true } ? anchor.PointToScreen(new Point()) : PointToScreen(new Point());
-        var center = pos.X + (anchor?.ActualWidth ?? ActualWidth) * scale / 2;
-        Panel.Left = Math.Clamp(center - Panel.Width * scale / 2, work.Left + 4, Math.Max(work.Left + 4, work.Right - Panel.Width * scale - 4)) / scale;
-        Panel.Top = Math.Max(work.Top / scale, Top - Panel.Height - 8);
+        var attachedAnchor = anchor is { IsLoaded: true } && PresentationSource.FromVisual(anchor) is not null;
+        var pos = attachedAnchor ? anchor!.PointToScreen(new Point()) : PointToScreen(new Point());
+        var center = pos.X + (attachedAnchor ? anchor!.ActualWidth : ActualWidth) * scale / 2;
+        var left = Math.Clamp(center - Panel.Width * scale / 2, work.Left + 4, Math.Max(work.Left + 4, work.Right - Panel.Width * scale - 4)) / scale;
+        var dockTop = Native.GetWindowRect(Handle, out var dockBounds) ? dockBounds.Top / scale : Top;
+        Panel.PlaceOn(screen, left, Math.Max(work.Top / scale, dockTop - Panel.Height - 8));
         if (!Panel.IsVisible) Panel.Show();
         panelLayer ??= new(Panel);
         outside ??= new(() => ctx.Menus > 0 || ctx.Modals > 0, () => [Handle, Panel.Handle], DismissPanel);
@@ -244,8 +250,9 @@ internal sealed class Dock2Window : LiquidWindow
     private bool Corridor()
     {
         if (!Panel.IsVisible || !GetCursorPos(out var p) || !Native.GetWindowRect(Handle, out var d) || !Native.GetWindowRect(Panel.Handle, out var panel)) return false;
-        var a = anchor is { IsLoaded: true } ? anchor.PointToScreen(new Point()) : PointToScreen(new Point());
-        return HoverCoordinator.InCorridor(p.X, p.Y, a.X, a.X + (anchor?.ActualWidth ?? ActualWidth) * Display.PrimaryScreen.Scale, d.Top, panel.Left, panel.Right, panel.Bottom, 12 * Display.PrimaryScreen.Scale);
+        var attachedAnchor = anchor is { IsLoaded: true } && PresentationSource.FromVisual(anchor) is not null;
+        var a = attachedAnchor ? anchor!.PointToScreen(new Point()) : PointToScreen(new Point());
+        return HoverCoordinator.InCorridor(p.X, p.Y, a.X, a.X + (attachedAnchor ? anchor!.ActualWidth : ActualWidth) * ctx.DockScreen.Scale, d.Top, panel.Left, panel.Right, panel.Bottom, 12 * ctx.DockScreen.Scale);
     }
     private async void PanelKey(object sender, KeyEventArgs e)
     {

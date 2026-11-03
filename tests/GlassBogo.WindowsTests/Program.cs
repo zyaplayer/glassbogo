@@ -5,6 +5,10 @@ using GlassBogo.PluginSdk;
 using System.Text.Json;
 using System.Diagnostics;
 
+if (args.Length == 1 && args[0] == "--display-check")
+{
+    Console.WriteLine(JsonSerializer.Serialize(Display.AllScreens)); return;
+}
 if (args.Length is 2 or 3 && args[0] == "--calendar-check")
 {
     using var source = JsonDocument.Parse(File.ReadAllText(args[1])); var sourceRoot = source.RootElement;
@@ -245,6 +249,19 @@ await Test("桌面隐藏异常恢复与恢复失败保留记录", async () =>
     try { controller.SetHidden(false); throw new Exception("restore failure ignored"); } catch (IOException) { }
     Check(File.Exists(Path.Combine(dir, "desktop-visibility.json")));
     backend.Available = true; controller.SetHidden(false); Check(backend.Visible);
+});
+await Test("双屏选择、负坐标、不同缩放与拔屏回退", () =>
+{
+    Display[] screens = [new("main", new(0, 0, 2560, 1440), new(0, 0, 2560, 1392), true, 1.5), new("left", new(-1920, -200, 0, 880), new(-1920, -200, 0, 832), false, 1)];
+    Check(Display.Resolve("left", screens).DeviceName == "left");
+    Check(Display.Resolve("LEFT", screens).Scale == 1);
+    Check(Display.Resolve("disconnected", screens).Primary);
+    Check(Display.AtPoint(-1500, -100, screens).DeviceName == "left");
+    Check(Display.AtPoint(1000, 400, screens).Primary);
+    Check(Display.AtPoint(-10000, 100, screens).DeviceName == "left");
+    Check(Display.Resolve("left", [screens[0]]).Primary);
+    Check(Display.Resolve("left", screens).DeviceName == "left");
+    return Task.CompletedTask;
 });
 Console.WriteLine($"RESULT passed={passed} failed={failed}");
 Environment.ExitCode = failed == 0 ? 0 : 1;

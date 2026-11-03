@@ -25,7 +25,7 @@ internal class V2Dialog : LiquidWindow
         PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; if (!Busy) Close(); } };
         Loaded += (_, _) =>
         {
-            var work = Display.PrimaryScreen.WorkingArea;
+            var work = Display.FromHandle(new System.Windows.Interop.WindowInteropHelper(owner).Handle).WorkingArea;
             if (!Native.GetWindowRect(Handle, out var bounds)) return;
             var x = Math.Clamp(bounds.Left, work.Left + 8, Math.Max(work.Left + 8, work.Right - (bounds.Right - bounds.Left) - 8));
             var y = Math.Clamp(bounds.Top, work.Top + 8, Math.Max(work.Top + 8, work.Bottom - (bounds.Bottom - bounds.Top) - 8));

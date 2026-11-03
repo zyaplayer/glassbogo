@@ -207,6 +207,14 @@ internal static class V2CoreTests
             Reject(() => db.Update(s => s.Preferences = s.Preferences with { CalendarX = double.NaN }));
             Reject(() => db.Update(s => s.Preferences = s.Preferences with { CalendarY = null }));
         });
+        test("双屏独立选择与全部日程视图重启后保留", () =>
+        {
+            var folder = Folder(); using var db = new Database(folder, true);
+            db.Update(s => s.Preferences = s.Preferences with { Monitor = "dock-display", CalendarMonitor = "calendar-display", CalendarView = "agenda" });
+            using var reopened = new Database(folder, true);
+            Check(reopened.Current.Preferences.Monitor == "dock-display" && reopened.Current.Preferences.CalendarMonitor == "calendar-display" && reopened.Current.Preferences.CalendarView == "agenda");
+            Check(JsonSerializer.Deserialize<Preferences>("{}", DataJson.Options) is { CalendarMonitor: null, CalendarView: "month" });
+        });
         test("V2 两区溢出始终有界并释放空区宽度", () =>
         {
             foreach (var width in new[] { 160d, 320, 800, 1920 }) foreach (var icon in new[] { 32d, 40, 48 })

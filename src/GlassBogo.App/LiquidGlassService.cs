@@ -10,7 +10,7 @@ using Vortice.Mathematics;
 
 namespace GlassBogo.App;
 
-// One serialized GPU queue and one monitor duplication shared by every v2 surface.
+// One serialized GPU queue; surfaces on each display share that output's capture.
 // UI snapshots are immutable. No DependencyObject is read by the GPU worker.
 internal sealed class LiquidGlassService : IAsyncDisposable
 {
@@ -21,10 +21,15 @@ internal sealed class LiquidGlassService : IAsyncDisposable
     private readonly DispatcherTimer timer;
     private readonly SemaphoreSlim gpuGate = new(1);
     private readonly Dictionary<LiquidWindow, State> states = [];
-    private DesktopCapture? capture;
-    private ID3D11Texture2D? synthetic;
-    private ID3D11Texture2D? desktopCache;
-    private LiquidGlassGpu? resources;
+    private readonly Dictionary<string, OutputGpu> outputs = new(StringComparer.OrdinalIgnoreCase);
+    private sealed class OutputGpu(DesktopCapture capture) : IDisposable
+    {
+        internal readonly DesktopCapture Capture = capture;
+        internal ID3D11Texture2D? Synthetic, DesktopCache;
+        internal LiquidGlassGpu? Resources;
+        internal bool Changed;
+        public void Dispose() { Resources?.Dispose(); Synthetic?.Dispose(); DesktopCache?.Dispose(); Capture.Dispose(); }
+    }
     private readonly Queue<double> renderTimes = new();
     private readonly Native.WinEventProc foregroundCallback;
     private nint hook;
@@ -44,16 +49,18 @@ internal sealed class LiquidGlassService : IAsyncDisposable
     internal long WakeCount { get; private set; }
     internal int LiveSurfaces => states.Count;
     internal int ClientCount => clients.Count;
+    internal string DebugState => $"management={managementOpen},releasing={releasing},retry={nextRetry:O},outputs={outputs.Count}; " + string.Join("; ", clients.Select(c => $"{c.Title}:visible={c.IsVisible},excluded={c.ExcludedFromCapture},covered={Covered(c)},front={c.Material.IsFrontBufferAvailable},dirty={c.MaterialDirty},bounds={c.ActualWidth}x{c.ActualHeight}"));
     private sealed class State : IDisposable
     {
         internal required LiquidGlassGpu Gpu;
         internal ID3D11Texture2D? Source;
         internal required int Width, Height;
+        internal required string DisplayName;
         internal int SourceWidth, SourceHeight;
         internal Native.Rect Bounds;
         public void Dispose() { Source?.Dispose(); Gpu.Dispose(); }
     }
-    private sealed record Frame(LiquidWindow Client, nint Hwnd, int X, int Y, int Width, int Height, float Dpi, Vector2 Pointer, bool Dirty);
+    private sealed record Frame(LiquidWindow Client, nint Hwnd, int X, int Y, int Width, int Height, float Dpi, Vector2 Pointer, bool Dirty, string DisplayName);
     private sealed record Presented(Frame Frame, nint Surface, bool Drew);
     private sealed record Frozen(LiquidWindow Client, BitmapSource Bitmap, Native.Rect Bounds);
     internal sealed record Metrics(string Adapter, int Surfaces, double? LocalMemoryMiB, double? NonLocalMemoryMiB, double? RenderFenceP95Milliseconds, string? QueryError);
@@ -62,19 +69,23 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         Metrics result = new("", 0, null, null, null, "No active graphics device");
         await OnGpu(() =>
         {
-            if (capture is null) return;
+            if (outputs.Count == 0) return;
             double? local = null, shared = null; string? error = null;
             try
             {
-                using var dxgiDevice = capture.Device.QueryInterface<IDXGIDevice>();
-                dxgiDevice.GetAdapter(out var adapter).CheckError();
-                using (adapter)
-                using (var info = adapter.QueryInterface<IDXGIAdapter3>())
-                { local = info.QueryVideoMemoryInfo(0, MemorySegmentGroup.Local).CurrentUsage / 1048576d; shared = info.QueryVideoMemoryInfo(0, MemorySegmentGroup.NonLocal).CurrentUsage / 1048576d; }
+                local = shared = 0;
+                foreach (var capture in outputs.Values.Select(o => o.Capture).DistinctBy(c => c.AdapterLuid))
+                {
+                    using var dxgiDevice = capture.Device.QueryInterface<IDXGIDevice>();
+                    dxgiDevice.GetAdapter(out var adapter).CheckError();
+                    using (adapter)
+                    using (var info = adapter.QueryInterface<IDXGIAdapter3>())
+                    { local += info.QueryVideoMemoryInfo(0, MemorySegmentGroup.Local).CurrentUsage / 1048576d; shared += info.QueryVideoMemoryInfo(0, MemorySegmentGroup.NonLocal).CurrentUsage / 1048576d; }
+                }
             }
             catch (Exception ex) { error = ex.Message; }
             var times = renderTimes.Order().ToArray();
-            result = new(capture.AdapterName, states.Count, local, shared, times.Length == 0 ? null : times[(int)Math.Floor((times.Length - 1) * .95)], error);
+            result = new(string.Join("; ", outputs.Values.Select(o => o.Capture.AdapterName).Distinct()), states.Count, local, shared, times.Length == 0 ? null : times[(int)Math.Floor((times.Length - 1) * .95)], error);
         });
         return result;
     }
@@ -241,7 +252,8 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         if (DateTime.UtcNow < nextRetry) return;
         if (reset) { reset = false; await PreserveVisibleFrames(); await ReleaseGraphics(preserveFrozen: true); }
         var frames = new List<Frame>();
-        var dark = Design.Dark; var displayName = Display.PrimaryScreen.DeviceName;
+        var dark = Design.Dark;
+        var clientDisplays = visible.ToDictionary(c => c, c => Display.FromHandle(c.Handle).DeviceName);
         var presented = new List<Presented>();
         Exception? error = null;
         try
@@ -251,27 +263,32 @@ internal sealed class LiquidGlassService : IAsyncDisposable
             // cause D3DImage locks, compositor work or material redraws.
             await OnGpu(() =>
             {
-                capture ??= new DesktopCapture(displayName, duplicate: !qa);
-                if (qa && synthetic is null)
+                foreach (var displayName in clientDisplays.Values.Distinct(StringComparer.OrdinalIgnoreCase))
                 {
-                    var r = capture.Output.DesktopCoordinates; var w = r.Right - r.Left; var h = r.Bottom - r.Top;
-                    synthetic = capture.Device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)w, (uint)h, 1, 1, BindFlags.ShaderResource));
-                    var pixels = new byte[checked(w * h * 4)];
-                    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) { var at = (y * w + x) * 4; pixels[at] = (byte)(40 + x / 32 % 2 * 100); pixels[at + 1] = (byte)(80 + y / 32 % 2 * 80); pixels[at + 2] = 80; pixels[at + 3] = 255; }
-                    capture.Context.UpdateSubresource<byte>(pixels, synthetic, 0, (uint)w * 4); backgroundChanged = true;
-                }
-                if (!qa)
-                {
-                    try
+                    if (!outputs.TryGetValue(displayName, out var outputGpu)) outputs[displayName] = outputGpu = new(new DesktopCapture(displayName, duplicate: !qa));
+                    var capture = outputGpu.Capture; outputGpu.Changed = false;
+                    if (qa && outputGpu.Synthetic is null)
                     {
-                        using var frame = capture.Acquire(1);
-                        if (frame is not null && (capture.FrameInfo.LastPresentTime != 0 || desktopCache is null))
-                        {
-                            if (desktopCache is null) desktopCache = capture.Device.CreateTexture2D(frame.Description with { BindFlags = BindFlags.ShaderResource, MiscFlags = ResourceOptionFlags.None });
-                            capture.Context.CopyResource(desktopCache, frame); backgroundChanged = true;
-                        }
+                        var r = capture.Output.DesktopCoordinates; var w = r.Right - r.Left; var h = r.Bottom - r.Top;
+                        outputGpu.Synthetic = capture.Device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)w, (uint)h, 1, 1, BindFlags.ShaderResource));
+                        var pixels = new byte[checked(w * h * 4)];
+                        for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) { var at = (y * w + x) * 4; pixels[at] = (byte)(40 + x / 32 % 2 * 100); pixels[at + 1] = (byte)(80 + y / 32 % 2 * 80); pixels[at + 2] = 80; pixels[at + 3] = 255; }
+                        capture.Context.UpdateSubresource<byte>(pixels, outputGpu.Synthetic, 0, (uint)w * 4); outputGpu.Changed = true;
                     }
-                    finally { capture.Release(); }
+                    if (!qa)
+                    {
+                        try
+                        {
+                            using var frame = capture.Acquire(1);
+                            if (frame is not null && (capture.FrameInfo.LastPresentTime != 0 || outputGpu.DesktopCache is null))
+                            {
+                                outputGpu.DesktopCache ??= capture.Device.CreateTexture2D(frame.Description with { BindFlags = BindFlags.ShaderResource, MiscFlags = ResourceOptionFlags.None });
+                                capture.Context.CopyResource(outputGpu.DesktopCache, frame); outputGpu.Changed = true;
+                            }
+                        }
+                        finally { capture.Release(); }
+                    }
+                    backgroundChanged |= outputGpu.Changed;
                 }
             });
             if (!backgroundChanged && visible.All(c => (c.Attached || c.FrozenMaterial) && !c.MaterialDirty))
@@ -288,24 +305,25 @@ internal sealed class LiquidGlassService : IAsyncDisposable
                 var dpi = (float)VisualTreeHelper.GetDpi(client).DpiScaleX;
                 if (!Native.GetWindowRect(client.Handle, out var bounds)) { client.Material.Unlock(); continue; }
                 frames.Add(new(client, client.Handle, bounds.Left, bounds.Top,
-                    Math.Max(1, bounds.Right - bounds.Left), Math.Max(1, bounds.Bottom - bounds.Top), dpi, client.Pointer * dpi, client.MaterialDirty));
+                    Math.Max(1, bounds.Right - bounds.Left), Math.Max(1, bounds.Bottom - bounds.Top), dpi, client.Pointer * dpi, client.MaterialDirty, clientDisplays[client]));
                 client.MaterialDirty = false;
             }
             if (frames.Count == 0) return;
             await OnGpu(() =>
             {
-                var frame = qa ? synthetic : desktopCache; if (capture is null || frame is null) return;
-                var live = frames.FirstOrDefault(f => !f.Client.Removed); if (live is null) return;
-                resources ??= new(capture.Device, capture.Context, capture.AdapterLuid, live.Hwnd, 1, 1);
-                var hasFrame = backgroundChanged;
                 foreach (var item in frames)
                 {
                     if (item.Client.Removed) continue;
-                    if (!states.TryGetValue(item.Client, out var state) || state.Width != item.Width || state.Height != item.Height)
+                    if (!outputs.TryGetValue(item.DisplayName, out var outputGpu)) continue;
+                    var capture = outputGpu.Capture; var frame = qa ? outputGpu.Synthetic : outputGpu.DesktopCache;
+                    if (frame is null) continue;
+                    outputGpu.Resources ??= new(capture.Device, capture.Context, capture.AdapterLuid, item.Hwnd, 1, 1);
+                    var hasFrame = outputGpu.Changed;
+                    if (!states.TryGetValue(item.Client, out var state) || state.Width != item.Width || state.Height != item.Height || state.DisplayName != item.DisplayName)
                     {
                         // The old pointer was detached below before disposing its owner.
                         if (state is not null) { continue; }
-                        state = new State { Gpu = new(capture.Device, capture.Context, capture.AdapterLuid, item.Hwnd, item.Width, item.Height, resources), Width = item.Width, Height = item.Height };
+                        state = new State { Gpu = new(capture.Device, capture.Context, capture.AdapterLuid, item.Hwnd, item.Width, item.Height, outputGpu.Resources), Width = item.Width, Height = item.Height, DisplayName = item.DisplayName };
                         states[item.Client] = state;
                     }
                     var output = capture.Output.DesktopCoordinates;
@@ -348,6 +366,7 @@ internal sealed class LiquidGlassService : IAsyncDisposable
                 { client.MaterialDirty = true; continue; }
                 if (!client.Attached) { client.Material.SetBackBuffer(D3DResourceType.IDirect3DSurface9, result.Surface); client.Attached = true; }
                 client.MaterialImage.Source = client.Material; client.FrozenMaterial = false; client.LastMaterialFrame = DateTime.UtcNow; client.LastFrameDark = dark;
+                client.LastFrameDisplay = result.Frame.DisplayName;
                 client.Material.AddDirtyRect(new Int32Rect(0, 0, result.Frame.Width, result.Frame.Height));
                 client.SetMaterialVisible(true, settings.VisualQuality == "reduced" ? "降低效果" : "强视觉"); RenderedFrames++;
             }
@@ -364,7 +383,7 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         if (error is not null) await ReleaseGraphics(preserveFrozen: true);
         else
         {
-            var resized = frames.Where(f => states.TryGetValue(f.Client, out var state) && (state.Width != f.Width || state.Height != f.Height)).Select(f => f.Client).ToArray();
+            var resized = frames.Where(f => states.TryGetValue(f.Client, out var state) && (state.Width != f.Width || state.Height != f.Height || state.DisplayName != f.DisplayName)).Select(f => f.Client).ToArray();
             foreach (var client in resized) { if (!client.ShowRetained("等待底栏更新")) client.SetMaterialVisible(false, "等待底栏更新"); client.DetachMaterial(); client.MaterialDirty = true; }
             if (resized.Length > 0) await OnGpu(() => { foreach (var client in resized) if (states.Remove(client, out var state)) state.Dispose(); });
         }
@@ -376,11 +395,11 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         var snapshots = new List<Frozen>();
         await OnGpu(() =>
         {
-            if (capture is null) return;
             foreach (var client in wanted)
             {
                 if (!states.TryGetValue(client, out var state)) continue;
-                var pixels = capture.ReadPixels(state.Gpu.Texture);
+                if (!outputs.TryGetValue(state.DisplayName, out var outputGpu)) continue;
+                var pixels = outputGpu.Capture.ReadPixels(state.Gpu.Texture);
                 try
                 {
                     var bitmap = BitmapSource.Create(state.Width, state.Height, 96, 96, PixelFormats.Pbgra32, null, pixels, state.Width * 4);
@@ -400,7 +419,7 @@ internal sealed class LiquidGlassService : IAsyncDisposable
         if (visible.All(c => c.FrozenMaterial || c.Removed))
         {
             foreach (var client in clients.Where(c => c.Attached)) { client.DetachMaterial(); if (!client.FrozenMaterial) client.SetMaterialVisible(false, "兼容模式"); }
-            await OnGpu(() => { foreach (var state in states.Values) state.Dispose(); states.Clear(); resources?.Dispose(); resources = null; });
+            await OnGpu(() => { foreach (var state in states.Values) state.Dispose(); states.Clear(); foreach (var output in outputs.Values) { output.Resources?.Dispose(); output.Resources = null; } });
         }
     }
     private async Task PreserveVisibleFrames()
@@ -419,7 +438,7 @@ internal sealed class LiquidGlassService : IAsyncDisposable
                 if (preserveFrozen && client.ShowRetained(client.EffectiveVisualMode)) client.FrozenMaterial = true;
                 else { client.ClearRetained(); client.MaterialImage.Source = client.Material; }
             }
-            await OnGpu(() => { foreach (var state in states.Values) state.Dispose(); states.Clear(); resources?.Dispose(); resources = null; synthetic?.Dispose(); synthetic = null; desktopCache?.Dispose(); desktopCache = null; capture?.Dispose(); capture = null; });
+            await OnGpu(() => { foreach (var state in states.Values) state.Dispose(); states.Clear(); foreach (var output in outputs.Values) output.Dispose(); outputs.Clear(); });
         }
         finally
         {

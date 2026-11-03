@@ -8,7 +8,7 @@ public record Entry(string Id, string Name, string Target, string Kind = "path",
 public record TaskCategory(string Id, string Name, string Color);
 public record CalendarTask(string Id, string Title, string Date, string Time = "", string Notes = "", string Priority = "normal", bool Completed = false, double Order = 0, string? CategoryId = null);
 public record SearchShortcut(uint Modifiers = 1, uint VirtualKey = 0xC0);
-public record Preferences(string Theme = "system", string? Monitor = null, bool AutoHide = false, bool Onboarded = false, string QuickShortcut = "N", bool AutoStart = false, bool HardwareAcceleration = false, string IconSize = "medium", string VisualQuality = "strong", SearchShortcut? SearchHotkey = null, bool HideDesktopIcons = false, bool DesktopCalendarVisible = true, double? CalendarX = null, double? CalendarY = null, string CalendarView = "month");
+public record Preferences(string Theme = "system", string? Monitor = null, bool AutoHide = false, bool Onboarded = false, string QuickShortcut = "N", bool AutoStart = false, bool HardwareAcceleration = false, string IconSize = "medium", string VisualQuality = "strong", SearchShortcut? SearchHotkey = null, bool HideDesktopIcons = false, bool DesktopCalendarVisible = true, double? CalendarX = null, double? CalendarY = null, string CalendarView = "month", string? CalendarMonitor = null);
 public record State
 {
     public int Version { get; set; } = 1;
@@ -54,7 +54,7 @@ public static class DataJson
             throw new InvalidDataException("钉住排序值无效。");
         if (s.Preferences.IconSize is not ("small" or "medium" or "large") || s.Preferences.VisualQuality is not ("strong" or "reduced" or "off"))
             throw new InvalidDataException("图标大小或视觉效果设置无效。");
-        if (s.Preferences.CalendarView is not ("month" or "week") || s.Preferences.CalendarX.HasValue != s.Preferences.CalendarY.HasValue || s.Preferences.CalendarX is { } x && !double.IsFinite(x) || s.Preferences.CalendarY is { } y && !double.IsFinite(y))
+        if (s.Preferences.CalendarView is not ("month" or "week" or "agenda") || s.Preferences.CalendarX.HasValue != s.Preferences.CalendarY.HasValue || s.Preferences.CalendarX is { } x && !double.IsFinite(x) || s.Preferences.CalendarY is { } y && !double.IsFinite(y))
             throw new InvalidDataException("日历位置或视图无效。");
         if (s.Preferences.SearchHotkey is { } shortcut && (shortcut.Modifiers == 0 || (shortcut.Modifiers & ~15u) != 0 || shortcut.VirtualKey is 0 or > 254))
             throw new InvalidDataException("搜索快捷键无效。");

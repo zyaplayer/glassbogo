@@ -9,7 +9,7 @@ using Format = Vortice.DXGI.Format;
 
 namespace GlassBogo.App;
 
-// Experimental renderer, deliberately not installed on production GlassWindow.
+// Independent GPU material for V2 desktop surfaces.
 // The owner must lock D3DImage before Render and detach its back buffer before Dispose.
 internal sealed class LiquidGlassGpu : IDisposable
 {
@@ -108,8 +108,10 @@ internal sealed class LiquidGlassGpu : IDisposable
         context.OMSetRenderTargets(outputView!);
         context.PSSetShader(glass);
         context.PSSetShaderResource(0, blurInput!);
+        context.PSSetShaderResource(1, input);
         context.Draw(3, 0);
         context.PSSetShaderResource(0, null!);
+        context.PSSetShaderResource(1, null!);
         context.OMSetRenderTargets(0, [], null);
         context.End(complete!);
         if (context3 is not null && completionEvent is not null)
@@ -146,6 +148,7 @@ internal sealed class LiquidGlassGpu : IDisposable
     // refraction, a narrow rim and pointer-local specular light. No copied assets.
     private const string Shader = """
         Texture2D background : register(t0);
+        Texture2D clearBackground : register(t1);
         SamplerState linearClamp : register(s0);
         cbuffer Settings : register(b0) {
             float4 sourceRect;
@@ -169,7 +172,7 @@ internal sealed class LiquidGlassGpu : IDisposable
         }
         float4 Horizontal(Fragment f) : SV_TARGET {
             float2 uv = sourceRect.xy + f.uv * sourceRect.zw;
-            float2 step = float2(sourceRect.z / shape.x * 2.4, 0);
+            float2 step = float2(sourceRect.z / shape.x * 1.2 * shape.z / 24.0, 0);
             float4 color = 0;
             float total = 0;
             [unroll] for (int i = -6; i <= 6; i++) {
@@ -189,20 +192,27 @@ internal sealed class LiquidGlassGpu : IDisposable
             float alpha = saturate(.5 - d);
             float2 n = normalize(float2(distanceToEdge(p+float2(1,0))-distanceToEdge(p-float2(1,0)),
                                        distanceToEdge(p+float2(0,1))-distanceToEdge(p-float2(0,1))) + .00001);
-            float edge = exp(-abs(d)/12.0);
-            float2 uv = f.uv - n * edge * 11.0 * shape.w / shape.xy;
+            float dpi = shape.z / 24.0;
+            float edge = exp(-abs(d)/(10.0*dpi));
+            float2 uv = f.uv - n * edge * 9.0 * dpi * shape.w / shape.xy;
             float3 color = 0;
             float total = 0;
             [unroll] for (int i = -5; i <= 5; i++) {
                 float weight = exp(-float(i*i)/9.0);
-                color += background.Sample(linearClamp, uv+float2(0,i*2.4/shape.y)).rgb * weight;
+                color += background.Sample(linearClamp, uv+float2(0,i*1.2*dpi/shape.y)).rgb * weight;
                 total += weight;
             }
-            color = lerp(color/total, tint.rgb, tint.a);
-            float rim = exp(-abs(d+1.1)*1.1);
+            // Preserve recognizable background detail through the flat body;
+            // edge displacement and a softer blur suggest a rounded lens.
+            float3 clear = clearBackground.Sample(linearClamp, BackgroundUv(sourceRect.xy + uv * sourceRect.zw)).rgb;
+            color = lerp(clear, color/total, .26 + edge*.34);
+            float luminance = dot(color,float3(.2126,.7152,.0722));
+            color = lerp(luminance.xxx,color,1.08);
+            color = lerp(color, tint.rgb, tint.a);
+            float rim = exp(-abs(d/dpi+1.1)*1.1);
             float light = .35 + .45*saturate(dot(n,normalize(float2(-.4,-1))));
             float glow = exp(-dot(p-pointer.xy,p-pointer.xy)/9000.0);
-            color += rim*light*.52 + edge*glow*.08*shape.w;
+            color += rim*light*.28 + edge*glow*.055*shape.w;
             return float4(saturate(color)*alpha,alpha);
         }
         """;

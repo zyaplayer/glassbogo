@@ -83,7 +83,7 @@ internal static class V2UiTest
                 Check(dock.ActualWidth * Display.PrimaryScreen.Scale <= Display.PrimaryScreen.WorkingArea.Width, "dock inside work area");
                 Check(ctx.Graphics.LiveSurfaces > 0 && dock.EffectiveVisualMode == "强视觉", "shared GPU material initialized with synthetic source");
                 await VerifyCalendar(ctx, output, Check);
-                Check(ctx.Graphics.ClientCount == 2 && !dock.Panel.UsesGlass, "dock and desktop calendar share glass rendering while category panels stay ordinary");
+                Check(ctx.Graphics.ClientCount == 2 && dock.Panel.UsesGlass, "dock and calendar share glass rendering; reusable category panel also opts into glass");
                 await Snapshot(dock, output, "dock");
 
                 dock.Interaction.Click("qa-cat-0"); dock.ShowCategory("qa-cat-0", true); await Task.Delay(180); dock.Panel.UpdateLayout();
@@ -99,6 +99,8 @@ internal static class V2UiTest
                 dock.Interaction.Click("qa-cat-1"); dock.ShowCategory("qa-cat-1", true);
                 Check(new WindowInteropHelper(dock.Panel).Handle == panelHandle, "T14 same panel HWND reused");
                 await Snapshot(dock.Panel, output, "category");
+                await Until(() => dock.Panel.EffectiveVisualMode == "强视觉" && (dock.Panel.Attached || dock.Panel.HasRetainedFrame));
+                Check(ctx.Graphics.ClientCount == 3 && dock.Panel.UsesGlass, "category panel has a live shared glass surface instead of an opaque fallback");
                 dock.DismissPanel(); Check(!dock.Panel.IsVisible, "pinned panel explicit dismissal");
                 Check(OutsideClick.ActiveCount == 0, "outside-click subscription removed with panel");
                 dock.Interaction.Click("qa-cat-0"); dock.ShowCategory("qa-cat-0", false); dock.Panel.Close();
@@ -110,6 +112,7 @@ internal static class V2UiTest
                 var overflowClose = Walk(dock.Panel).OfType<Button>().Single(b => b.Content as string == "×"); overflowClose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(!dock.Panel.IsVisible && OutsideClick.ActiveCount == 0, "overflow panel has a working explicit close button");
 
+                await VerifyDisplays(ctx, Check);
                 await VerifyEditor(dock, ctx, Check);
 
                 ctx.OpenManager(); Manager2Window? manager = ctx.Manager!; manager.UpdateLayout();
@@ -128,8 +131,9 @@ internal static class V2UiTest
                 manager.ShowPage("settings"); await Snapshot(manager, output, "settings");
                 await VerifyDesktopToggle(manager, ctx, Check);
                 manager.Close(); manager = null;
-                await Until(() => ctx.Graphics.RenderedFrames > pausedFrames && dock.ExcludedFromCapture);
-                Check(ctx.Graphics.ClientCount == 2 && !ctx.Graphics.ScreenshotReady, "closing management restores dock and calendar capture");
+                try { await Until(() => ctx.Graphics.RenderedFrames > pausedFrames && dock.ExcludedFromCapture); }
+                catch (Exception ex) { throw new InvalidOperationException(ctx.Graphics.DebugState, ex); }
+                Check(ctx.Graphics.ClientCount == 3 && !ctx.Graphics.ScreenshotReady, "closing management restores dock, category and calendar capture");
                 await VerifyDockStability(dock, ctx, Check);
                 await VerifyMaterialContinuity(dock, ctx, Check);
 
@@ -142,7 +146,7 @@ internal static class V2UiTest
 
                 ctx.Search.Open(); ctx.Search.Query.Text = "QA Entry 0042"; await ctx.Search.RefreshResults();
                 Check(ctx.Search.Results.Items.Count == 1 && ctx.Search.Topmost, "T09/T10 independent query and temporary topmost");
-                Check(!ctx.Search.UsesGlass && Affinity(ctx.Search) == 0 && ctx.Graphics.ClientCount == 2, "search stays ordinary while dock and calendar use glass");
+                Check(!ctx.Search.UsesGlass && Affinity(ctx.Search) == 0 && ctx.Graphics.ClientCount == 3, "search stays ordinary while dock, category and calendar use glass");
                 launch.Fail = true; await ctx.Search.LaunchSelected(); Check(ctx.Search.IsVisible, "launch failure keeps search usable");
                 launch.Fail = false; await ctx.Search.LaunchSelected(); Check(!ctx.Search.IsVisible && launch.Last == "qa-entry-42", "T10 successful launch dismisses search");
                 ctx.Search.Open(); ctx.Search.Dismiss(true); Check(!ctx.Search.IsVisible, "T11 cancel dismisses temporary search");
@@ -655,6 +659,12 @@ internal static class V2UiTest
         await Until(() => calendar.Agenda.Items.Cast<CalendarTask>().Any(t => t.Id == task.Id));
         check(task.Date == selected.ToString("yyyy-MM-dd") && task.Time == "09:30" && task.Priority == "high" && task.Notes == "QA notes", "schedule saves title, time, notes and priority to the existing calendar data");
         check(ReferenceEquals(dockButton, Walk(ctx.Dock!).OfType<Button>().Single(b => b.ToolTip as string == "搜索")), "schedule writes do not rebuild dock buttons or reload their icons");
+
+        await ctx.SetCalendarView("agenda"); await Until(() => calendar.Agenda.Items.Count == count + 1);
+        check(calendar.Agenda.Items.Cast<CalendarTask>().Any(t => t.Id == task.Id) && Walk(calendar).OfType<Button>().Any(b => b.Content as string == $"全部日程 {count + 1}"), "all schedules shows saved tasks across dates with a visible total");
+        calendar.Agenda.ScrollIntoView(task); await Snapshot(calendar, output, "all-schedules");
+        await calendar.LocateSchedule(task); await Until(() => ctx.Preferences.CalendarView == "month" && calendar.Agenda.Items.Count == 1);
+        check(calendar.Selected == selected, "locate schedule opens the original saved date without importing or duplicating tasks");
         await ctx.SetCalendarView("week"); await Until(() => Walk(calendar).OfType<Border>().Count(b => b.Tag is DesktopCalendarWindow.LessonCell) == 28);
         check(calendar.Width > 700 && Walk(calendar).OfType<Button>().Any(b => b.Tag is CalendarTask t && t.Id == task.Id), "weekly timetable shows seven days and four periods, including the saved course");
         await Dialog(() => calendar.Edit(date: selected, initialTime: Timetable.Slots[2].Start), dialog => { check(((ScheduleEditorWindow)dialog).TimeInput.Text == "13:45", "course creation pre-fills the selected lesson start time"); dialog.Close(); return Task.CompletedTask; });
@@ -683,6 +693,49 @@ internal static class V2UiTest
         check(calendar.Handle == handle && !calendar.Topmost, "calendar can collapse and restore alongside the dock without a new window");
         calendar.SelectDate(DateOnly.MaxValue); calendar.SelectDate(DateOnly.MinValue); calendar.SelectDate(selected);
         check(true, "calendar handles boundary years without drawing dates outside the valid range");
+    }
+    private static async Task VerifyDisplays(V2Context ctx, Action<bool, string> check)
+    {
+        var screens = Display.AllScreens; var dock = ctx.Dock!; var calendar = ctx.CalendarWindow!;
+        var saved = ctx.Preferences;
+        static bool Inside(LiquidWindow window, Display display) => Native.GetWindowRect(window.Handle, out var r) && r.Left >= display.WorkingArea.Left && r.Top >= display.WorkingArea.Top && r.Right <= display.WorkingArea.Right && r.Bottom <= display.WorkingArea.Bottom;
+        try
+        {
+            foreach (var screen in screens)
+            {
+                var other = screens.FirstOrDefault(s => s.DeviceName != screen.DeviceName) ?? screen;
+                await ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { Monitor = screen.DeviceName, CalendarMonitor = other.DeviceName, CalendarX = null, CalendarY = null }));
+                await Until(() => Inside(dock, screen) && Inside(calendar, other));
+                dock.ShowCategory("qa-cat-0", true);
+                try { await Until(() => Inside(dock.Panel, screen) && dock.LastFrameDisplay == screen.DeviceName && dock.Panel.LastFrameDisplay == screen.DeviceName && calendar.LastFrameDisplay == other.DeviceName); }
+                catch (Exception ex)
+                {
+                    Native.GetWindowRect(dock.Panel.Handle, out var p); Native.GetWindowRect(dock.Handle, out var d);
+                    throw new InvalidOperationException($"Display route {screen.DeviceName}/{other.DeviceName}: panel={p.Left},{p.Top},{p.Right},{p.Bottom}, dock={d.Left},{d.Top},{d.Right},{d.Bottom}; work={screen.WorkingArea}; frames={dock.LastFrameDisplay}/{dock.Panel.LastFrameDisplay}/{calendar.LastFrameDisplay}; failure={ctx.Graphics.LastFailure}", ex);
+                }
+                check(dock.EffectiveVisualMode == "强视觉" && dock.Panel.EffectiveVisualMode == "强视觉" && calendar.EffectiveVisualMode == "强视觉", $"display {screen.DeviceName}: dock/category use their own output; calendar independently uses {other.DeviceName} ({screen.Scale:P0}/{other.Scale:P0} DPI)");
+                dock.DismissPanel();
+            }
+            await ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { Monitor = "QA-disconnected-display", CalendarMonitor = "QA-disconnected-calendar", CalendarX = -100000, CalendarY = 100000 }));
+            await Until(() => Inside(dock, Display.PrimaryScreen) && Inside(calendar, Display.PrimaryScreen));
+            check(ctx.Preferences.Monitor == "QA-disconnected-display", "missing display falls back inside primary work area without discarding saved monitor choice");
+            var movable = new LiquidWindow(ctx.Graphics) { Width = 400, Height = 200, ShowInTaskbar = false, ShowActivated = false };
+            try
+            {
+                var primary = Display.PrimaryScreen; movable.PlaceOn(primary, primary.WorkingArea.Left / primary.Scale + 20, primary.WorkingArea.Top / primary.Scale + 20); movable.Show(); movable.ReleasePlacement();
+                var destination = screens.FirstOrDefault(s => !s.Primary) ?? primary;
+                Native.SetWindowPos(movable.Handle, 0, destination.WorkingArea.Left + 30, destination.WorkingArea.Top + 30, (int)(400 * destination.Scale), (int)(200 * destination.Scale), 0x14);
+                await Task.Delay(180);
+                check(Inside(movable, destination), "manual window movement across mixed DPI does not snap back to its initial monitor");
+            }
+            finally { movable.Close(); }
+        }
+        finally
+        {
+            dock.DismissPanel();
+            await ctx.Write(() => ctx.Db.Update(s => s.Preferences = saved));
+            await Until(() => Inside(dock, ctx.DockScreen) && Inside(calendar, ctx.CalendarScreen));
+        }
     }
     private static async Task VerifyMaterialContinuity(Dock2Window dock, V2Context ctx, Action<bool, string> check)
     {
@@ -785,7 +838,7 @@ internal static class V2UiTest
             ctx.Manager!.Close();
             await Until(() => ctx.Graphics.RenderedFrames > before && dock.ExcludedFromCapture && !ctx.Graphics.ScreenshotReady);
         }
-        check(ctx.Graphics.ClientCount == 2 && ctx.Graphics.LastFailure is null, "repeated management close restores both glass windows without stale screenshot state");
+        check(ctx.Graphics.ClientCount == 3 && ctx.Graphics.LastFailure is null, "repeated management close restores glass windows without stale screenshot state");
     }
     private static uint Affinity(Window window)
     {

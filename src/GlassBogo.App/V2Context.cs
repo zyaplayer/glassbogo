@@ -32,6 +32,8 @@ internal sealed class V2Context : IAsyncDisposable
     internal event EventHandler? Changed;
     internal string HotkeyStatus { get; private set; } = "尚未注册";
     internal Preferences Preferences => Db.Current.Preferences;
+    internal Display DockScreen => Display.Resolve(Preferences.Monitor);
+    internal Display CalendarScreen => Display.Resolve(Preferences.CalendarMonitor ?? Preferences.Monitor);
     internal double IconSize => Preferences.IconSize switch { "small" => 32, "large" => 48, _ => 40 };
     internal V2Context(Database database, bool qa = false, ILaunchService? launcher = null, AppDiscovery? discovery = null, Func<Entry, Task<TargetState>>? targetProbe = null, AppDiscovery? desktopDiscovery = null)
     {
@@ -57,7 +59,7 @@ internal sealed class V2Context : IAsyncDisposable
         if (Closing) return;
         var next = Preferences;
         if (applied.Theme != next.Theme) Design.Apply(next.Theme);
-        if (applied.Theme != next.Theme || applied.VisualQuality != next.VisualQuality) Graphics.Refresh();
+        if (applied.Theme != next.Theme || applied.VisualQuality != next.VisualQuality || applied.Monitor != next.Monitor || applied.CalendarMonitor != next.CalendarMonitor) Graphics.Refresh();
         applied = next; SyncCalendar(); Changed?.Invoke(this, EventArgs.Empty);
     });
     private void ThemeChanged(object sender, UserPreferenceChangedEventArgs e) => dispatcher.BeginInvoke(() => { if (!Closing) { Design.Apply(Preferences.Theme); Graphics.Refresh(); Changed?.Invoke(this, EventArgs.Empty); } });

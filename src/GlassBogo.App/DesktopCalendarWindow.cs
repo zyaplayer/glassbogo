@@ -8,6 +8,7 @@ internal sealed class DesktopCalendarWindow : LiquidWindow
     private readonly V2Context ctx;
     private readonly UniformGrid days = new() { Columns = 7, Rows = 7 };
     private readonly ContentControl calendarHost = new();
+    private readonly Button allSchedules;
     private readonly Grid layout = new();
     private string view;
     private int? selectedPeriod;
@@ -42,7 +43,8 @@ internal sealed class DesktopCalendarWindow : LiquidWindow
         month.LostMouseCapture += async (_, _) => { if (dragging) await EndDrag(); };
         var modes = new DockPanel { Margin = new(0, 5, 0, 7) };
         var reset = Compact(V2Ui.Async("右上角", ResetPosition)); DockPanel.SetDock(reset, Dock.Right); modes.Children.Add(reset);
-        var tabs = new StackPanel { Orientation = Orientation.Horizontal }; tabs.Children.Add(Compact(V2Ui.Async("月历", () => ctx.SetCalendarView("month")))); tabs.Children.Add(Compact(V2Ui.Async("课表", () => ctx.SetCalendarView("week")))); modes.Children.Add(tabs);
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal }; tabs.Children.Add(Compact(V2Ui.Async("月历", () => ctx.SetCalendarView("month")))); tabs.Children.Add(Compact(V2Ui.Async("课表", () => ctx.SetCalendarView("week"))));
+        allSchedules = Compact(V2Ui.Async("全部日程", () => ctx.SetCalendarView("agenda"))); tabs.Children.Add(allSchedules); modes.Children.Add(tabs);
         Grid.SetRow(modes, 1); root.Children.Add(modes);
         Grid.SetRow(calendarHost, 2); root.Children.Add(calendarHost);
         var day = new DockPanel { Margin = new(0, 8, 0, 6) };
@@ -80,24 +82,26 @@ internal sealed class DesktopCalendarWindow : LiquidWindow
     internal void Position()
     {
         if (dragging || savingPosition || ctx.Dock is not { IsLoaded: true }) return;
-        var screen = Display.PrimaryScreen; var work = screen.WorkingArea; var scale = screen.Scale;
+        var screen = ctx.CalendarScreen; var work = screen.WorkingArea; var scale = screen.Scale;
+        ApplyDisplayLimits(screen);
         Width = Math.Min(view == "week" ? 900 : 420, work.Width / scale - 24); Height = Math.Min(view == "week" ? 620 : 450, work.Height / scale - 24);
         MoveTo(ctx.Preferences.CalendarX is { } x ? work.Left / scale + x : work.Right / scale - Width - 16, ctx.Preferences.CalendarY is { } y ? work.Top / scale + y : work.Top / scale + 16);
     }
     internal void MoveTo(double left, double top)
     {
-        var screen = Display.PrimaryScreen; var work = screen.WorkingArea; var scale = screen.Scale;
-        Left = Math.Clamp(left, work.Left / scale + 8, Math.Max(work.Left / scale + 8, work.Right / scale - Width - 8));
-        Top = Math.Clamp(top, work.Top / scale + 8, Math.Max(work.Top / scale + 8, work.Bottom / scale - Height - 8));
+        var screen = ctx.CalendarScreen; var work = screen.WorkingArea; var scale = screen.Scale;
+        var x = Math.Clamp(left, work.Left / scale + 8, Math.Max(work.Left / scale + 8, work.Right / scale - Width - 8));
+        var y = Math.Clamp(top, work.Top / scale + 8, Math.Max(work.Top / scale + 8, work.Bottom / scale - Height - 8));
+        PlaceOn(screen, x, y);
     }
     internal void BeginDrag(Point screenPoint) { if (savingPosition) return; dragging = true; dragStart = screenPoint; dragLeft = Left; dragTop = Top; }
-    internal void DragTo(Point screenPoint) { if (!dragging) return; var scale = Display.PrimaryScreen.Scale; MoveTo(dragLeft + (screenPoint.X - dragStart.X) / scale, dragTop + (screenPoint.Y - dragStart.Y) / scale); }
+    internal void DragTo(Point screenPoint) { if (!dragging) return; var scale = ctx.CalendarScreen.Scale; MoveTo(dragLeft + (screenPoint.X - dragStart.X) / scale, dragTop + (screenPoint.Y - dragStart.Y) / scale); }
     internal async Task EndDrag()
     {
         if (!dragging) return; dragging = false;
         if (ctx.Closing) return;
         if (Math.Abs(Left - dragLeft) < 1 && Math.Abs(Top - dragTop) < 1) return;
-        var screen = Display.PrimaryScreen; var x = Left - screen.WorkingArea.Left / screen.Scale; var y = Top - screen.WorkingArea.Top / screen.Scale;
+        var screen = ctx.CalendarScreen; var x = Left - screen.WorkingArea.Left / screen.Scale; var y = Top - screen.WorkingArea.Top / screen.Scale;
         savingPosition = true;
         try { await ctx.SaveCalendarPosition(x, y); }
         catch (Exception ex) { Design.Error(ex); }
@@ -105,14 +109,20 @@ internal sealed class DesktopCalendarWindow : LiquidWindow
     }
     private Task ResetPosition() => ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { CalendarX = null, CalendarY = null }));
     internal void SelectDate(DateOnly date) { Selected = date; selectedPeriod = null; Refresh(); }
+    internal async Task LocateSchedule(CalendarTask task)
+    {
+        SelectDate(DateOnly.ParseExact(task.Date, "yyyy-MM-dd"));
+        if (view == "agenda") await ctx.SetCalendarView("month");
+    }
     private void Navigate(int offset) { if (view == "week") { SelectDate(Timetable.ShiftWeek(Selected, offset)); return; } var month = (Selected.Year - 1) * 12 + Selected.Month - 1 + offset; if (month >= 0 && month < 9999 * 12) SelectDate(Selected.AddMonths(offset)); }
     private void Refresh()
     {
         snapshot = ctx.Db.Current.Tasks.ToArray(); categories = ctx.Db.Current.TaskCategories.ToArray();
         view = ctx.Preferences.CalendarView;
-        month.Text = view == "week" ? $"{Timetable.WeekStart(Selected):M/d} – {Timetable.WeekDays(Selected).Last():M/d} · 课表" : Selected.ToString("yyyy年 M月"); heading.Text = Selected.ToString("M月d日 dddd");
-        var date = Selected.ToString("yyyy-MM-dd"); var rows = ctx.Calendar.Query(date).ToArray();
-        summary.Text = rows.Length == 0 ? "当天没有日程，点击“＋ 日程”添加" : $"{rows.Count(t => !t.Completed)} 项待办 · {rows.Count(t => t.Completed)} 项已完成";
+        var all = view == "agenda"; allSchedules.Content = $"全部日程 {snapshot.Length}";
+        month.Text = all ? "全部日程" : view == "week" ? $"{Timetable.WeekStart(Selected):M/d} – {Timetable.WeekDays(Selected).Last():M/d} · 课表" : Selected.ToString("yyyy年 M月"); heading.Text = all ? "所有日期 · 包含已完成" : Selected.ToString("M月d日 dddd");
+        var date = Selected.ToString("yyyy-MM-dd"); var rows = ctx.Calendar.Query(all ? null : date).OrderBy(t => t.Date).ThenBy(t => t.Time).ThenBy(t => t.Order).ToArray();
+        summary.Text = rows.Length == 0 ? snapshot.Length > 0 ? $"当天无日程 · 已保存 {snapshot.Length} 项，点“全部日程”查看" : "还没有日程，点击“＋ 日程”添加" : $"{rows.Count(t => !t.Completed)} 项待办 · {rows.Count(t => t.Completed)} 项已完成";
         var selectedId = (Agenda.SelectedItem as CalendarTask)?.Id; Agenda.ItemsSource = rows; Agenda.SelectedItem = rows.FirstOrDefault(t => t.Id == selectedId);
         var counts = snapshot.Where(t => !t.Completed).GroupBy(t => t.Date).ToDictionary(g => g.Key, g => g.Count());
         days.Children.Clear(); foreach (var text in new[] { "一", "二", "三", "四", "五", "六", "日" }) { var label = V2Ui.Label(text, 11, "Muted"); label.TextAlignment = TextAlignment.Center; days.Children.Add(label); }
@@ -126,7 +136,8 @@ internal sealed class DesktopCalendarWindow : LiquidWindow
             if (value == Selected) button.SetResourceReference(Control.BackgroundProperty, "Selected");
             button.ToolTip = value.ToString("yyyy-MM-dd") + (count > 0 ? $" · {count} 项待办" : ""); days.Children.Add(button);
         }
-        layout.RowDefinitions[2].Height = view == "week" ? new(1, GridUnitType.Star) : new(150);
+        calendarHost.Visibility = all ? Visibility.Collapsed : Visibility.Visible;
+        layout.RowDefinitions[2].Height = all ? new(0) : view == "week" ? new(1, GridUnitType.Star) : new(150);
         layout.RowDefinitions[4].Height = view == "week" ? new(120) : new(1, GridUnitType.Star);
         calendarHost.Content = view == "week" ? BuildTimetable() : days;
         Position();
@@ -191,6 +202,7 @@ internal sealed class DesktopCalendarWindow : LiquidWindow
     {
         var row = new DockPanel { Margin = new(0, 2, 0, 2) };
         var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        if (view == "agenda") actions.Children.Add(Compact(V2Ui.Async("定位", () => LocateSchedule(task))));
         actions.Children.Add(Compact(V2Ui.Button("编辑", () => Edit(task)))); actions.Children.Add(Compact(V2Ui.Button("删除", () => Remove(task))));
         DockPanel.SetDock(actions, Dock.Right); row.Children.Add(actions);
         var complete = new CheckBox { IsChecked = task.Completed, VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0), ToolTip = "标记完成／未完成" };
@@ -204,7 +216,7 @@ internal sealed class DesktopCalendarWindow : LiquidWindow
         };
         row.Children.Add(complete);
         var content = new StackPanel(); var title = V2Ui.Label(task.Title, 13); title.TextWrapping = TextWrapping.NoWrap; title.TextTrimming = TextTrimming.CharacterEllipsis; if (task.Completed) title.TextDecorations = TextDecorations.Strikethrough; content.Children.Add(title);
-        content.Children.Add(V2Ui.Label((task.Time.Length == 0 ? "全天" : task.Time) + (task.Priority == "high" ? " · 重要" : "") + (categories.FirstOrDefault(c => c.Id == task.CategoryId) is { } category ? " · " + category.Name : ""), 11, "Muted"));
+        content.Children.Add(V2Ui.Label((view == "agenda" ? task.Date + " · " : "") + (task.Time.Length == 0 ? "全天" : task.Time) + (task.Priority == "high" ? " · 重要" : "") + (categories.FirstOrDefault(c => c.Id == task.CategoryId) is { } category ? " · " + category.Name : ""), 11, "Muted"));
         row.Children.Add(content); return row;
     }
     internal void Edit(CalendarTask? task = null, DateOnly? date = null, string initialTime = "") => V2Ui.Modal(ctx, () => new ScheduleEditorWindow(this, ctx, task, date ?? Selected, SelectDate, initialTime).ShowDialog());

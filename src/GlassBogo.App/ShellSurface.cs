@@ -35,6 +35,19 @@ internal record Display(string DeviceName, PixelRect Bounds, PixelRect WorkingAr
     }
     internal static Display PrimaryScreen => AllScreens.First(s => s.Primary);
     internal static Display FromHandle(nint hwnd) => Read(MonitorFromWindow(hwnd, 2));
+    internal static Display Resolve(string? device, Display[]? screens = null)
+    {
+        var available = screens ?? AllScreens;
+        return available.FirstOrDefault(s => string.Equals(s.DeviceName, device, StringComparison.OrdinalIgnoreCase)) ?? available.FirstOrDefault(s => s.Primary) ?? available.First();
+    }
+    internal static Display AtPoint(double x, double y, Display[]? screens = null) => (screens ?? AllScreens)
+        .MinBy(s => Math.Pow(Math.Max(s.Bounds.Left - x, Math.Max(0, x - s.Bounds.Right)), 2) + Math.Pow(Math.Max(s.Bounds.Top - y, Math.Max(0, y - s.Bounds.Bottom)), 2))!;
+    internal static Display PointerScreen
+    {
+        get { GetCursorPos(out var point); return AtPoint(point.X, point.Y); }
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct CursorPoint { public int X, Y; }
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out CursorPoint point);
 }
 internal sealed class Tray : IDisposable
 {

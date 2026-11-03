@@ -27,7 +27,7 @@ internal sealed class Manager2Window : LiquidWindow
     internal Manager2Window(V2Context ctx) : base(ctx.Graphics)
     {
         this.ctx = ctx; Title = "GlassBogo · 管理";
-        var work = Display.PrimaryScreen;
+        var work = ctx.DockScreen;
         Width = Math.Min(1000, work.WorkingArea.Width / work.Scale - 24);
         // Leave the bottom dock visible for management and screenshot review.
         var dockTop = ctx.Dock is { IsLoaded: true } dock && double.IsFinite(dock.Top) ? dock.Top : work.WorkingArea.Bottom / work.Scale - ctx.IconSize - 74;
@@ -36,6 +36,7 @@ internal sealed class Manager2Window : LiquidWindow
         Height = Math.Min(700, available);
         Left = work.WorkingArea.Left / work.Scale + (work.WorkingArea.Width / work.Scale - Width) / 2;
         Top = top + Math.Max(0, (available - Height) / 2); WindowStartupLocation = WindowStartupLocation.Manual;
+        PlaceOn(work, Left, Top);
         Entries = V2Ui.EntryList(ctx, item => item is V2EntryItem row ? EntryActions(row.Entry) : new Border());
         System.Windows.Automation.AutomationProperties.SetName(Entries, "入口列表");
         System.Windows.Automation.AutomationProperties.SetName(categories, "分类列表");
@@ -43,7 +44,7 @@ internal sealed class Manager2Window : LiquidWindow
         selectionLabel.Margin = new(0, 0, 12, 0);
         var root = new DockPanel(); var header = new DockPanel { Margin = new(0, 0, 0, 12) };
         var close = V2Ui.Button("关闭", Close); DockPanel.SetDock(close, Dock.Right); header.Children.Add(close);
-        var title = V2Ui.Label("GlassBogo", 23); title.MouseLeftButtonDown += (_, e) => { if (e.LeftButton == MouseButtonState.Pressed) DragMove(); }; header.Children.Add(title);
+        var title = V2Ui.Label("GlassBogo", 23); title.MouseLeftButtonDown += (_, e) => { if (e.LeftButton == MouseButtonState.Pressed) { ReleasePlacement(); DragMove(); } }; header.Children.Add(title);
         DockPanel.SetDock(header, Dock.Top); root.Children.Add(header);
         var navigation = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 0, 0, 10) };
         foreach (var (key, label) in new[] { ("entries", "入口与分类"), ("settings", "设置") }) navigation.Children.Add(V2Ui.Button(label, () => ShowPage(key)));
@@ -223,6 +224,10 @@ internal sealed class Manager2Window : LiquidWindow
         }
         Choice("外观", [new("system", "跟随系统"), new("light", "浅色"), new("dark", "深色")], ctx.Preferences.Theme, value => ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { Theme = value })));
         Choice("图标大小", [new("small", "小 · 32"), new("medium", "中 · 40"), new("large", "大 · 48")], ctx.Preferences.IconSize, value => ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { IconSize = value })));
+        var displays = Display.AllScreens;
+        Choice("底栏显示器", new[] { new Choice("", "跟随主屏") }.Concat(displays.Select((s, i) => new Choice(s.DeviceName, $"屏幕 {i + 1}{(s.Primary ? " · 主屏" : "")} · {s.Bounds.Width}×{s.Bounds.Height}"))).ToArray(), ctx.Preferences.Monitor ?? "", value => ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { Monitor = value.Length == 0 ? null : value })));
+        Choice("日历显示器", new[] { new Choice("", "跟随底栏") }.Concat(displays.Select((s, i) => new Choice(s.DeviceName, $"屏幕 {i + 1}{(s.Primary ? " · 主屏" : "")}"))).ToArray(), ctx.Preferences.CalendarMonitor ?? "", value => ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { CalendarMonitor = value.Length == 0 ? null : value, CalendarX = null, CalendarY = null })));
+        panel.Children.Add(V2Ui.Label("搜索在鼠标所在屏幕打开；断开显示器后自动回到主屏，重新连接后恢复所选屏幕。", 12, "Muted"));
         Choice("视觉效果", [new("strong", "强视觉"), new("reduced", "降低效果"), new("off", "关闭效果")], ctx.Preferences.VisualQuality, value => ctx.Write(() => ctx.Db.Update(s => s.Preferences = s.Preferences with { VisualQuality = value })));
         visualStatus = V2Ui.Label("当前效果：" + ctx.Graphics.Status, 12, "Muted"); panel.Children.Add(visualStatus);
         panel.Children.Add(V2Ui.Label("管理窗口打开期间，底栏暂停实时更新以便截图；关闭管理后恢复。", 12, "Muted"));

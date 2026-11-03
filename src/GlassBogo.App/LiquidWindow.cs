@@ -18,8 +18,11 @@ internal class LiquidWindow : Window
     internal bool ExcludedFromCapture;
     internal DateTime LastMaterialFrame;
     internal bool LastFrameDark;
+    internal string? LastFrameDisplay;
     private Native.Rect retainedBounds;
     private int transition;
+    private (Display Screen, double Left, double Top, double Width, double Height)? placement;
+    private HwndSource? placementSource;
     internal bool HasRetainedFrame => RetainedImage.Source is not null && Native.GetWindowRect(Handle, out var rect) && rect.Left == retainedBounds.Left && rect.Top == retainedBounds.Top && rect.Right == retainedBounds.Right && rect.Bottom == retainedBounds.Bottom;
     internal System.Numerics.Vector2 Pointer = new(-1000, -1000);
     private readonly LiquidGlassService graphics;
@@ -41,12 +44,11 @@ internal class LiquidWindow : Window
         var root = new Grid(); root.Children.Add(Fallback); root.Children.Add(RetainedImage); root.Children.Add(MaterialImage); root.Children.Add(content);
         Content = root;
         ThemeChanged();
-        Loaded += (_, _) => { if (UsesGlass) graphics.Add(this); else Design.Reveal(Body); };
+        Loaded += (_, _) => { ApplyPlacement(); if (UsesGlass) graphics.Add(this); else Design.Reveal(Body); };
         SourceInitialized += (_, _) =>
         {
-            var screen = Display.PrimaryScreen;
-            MaxWidth = Math.Max(80, screen.WorkingArea.Width / screen.Scale - 16);
-            MaxHeight = Math.Max(80, screen.WorkingArea.Height / screen.Scale - 16);
+            ApplyDisplayLimits(placement?.Screen ?? (Owner is LiquidWindow owner ? Display.FromHandle(owner.Handle) : Display.FromHandle(Handle)));
+            placementSource = HwndSource.FromHwnd(Handle); placementSource?.AddHook(DisplayMessage);
         };
         IsVisibleChanged += (_, _) => { if (UsesGlass) { MaterialDirty = true; graphics.Wake(); } };
         SizeChanged += (_, _) => GeometryChanged();
@@ -54,7 +56,38 @@ internal class LiquidWindow : Window
         MouseMove += (_, e) => { if (UsesGlass) { var p = e.GetPosition(this); Pointer = new((float)p.X, (float)p.Y); MaterialDirty = true; graphics.Wake(); } };
         MouseLeave += (_, _) => { if (UsesGlass) { Pointer = new(-1000, -1000); MaterialDirty = true; graphics.Wake(); } };
         Material.IsFrontBufferAvailableChanged += (_, _) => { if (UsesGlass && !Removed) graphics.FrontBufferChanged(this); };
-        Closed += (_, _) => { Removed = true; if (UsesGlass) graphics.Remove(this); };
+        Closed += (_, _) => { placementSource?.RemoveHook(DisplayMessage); Removed = true; if (UsesGlass) graphics.Remove(this); };
+    }
+    internal void ApplyDisplayLimits(Display screen)
+    {
+        MaxWidth = Math.Max(80, screen.WorkingArea.Width / screen.Scale - 16);
+        MaxHeight = Math.Max(80, screen.WorkingArea.Height / screen.Scale - 16);
+    }
+    internal void PlaceOn(Display screen, double left, double top)
+    {
+        ApplyDisplayLimits(screen); placement = (screen, left, top, Width, Height);
+        if (IsLoaded) ApplyPlacement();
+        else { Left = left; Top = top; }
+    }
+    internal void ReleasePlacement() => placement = null;
+    private void ApplyPlacement()
+    {
+        if (placement is not { } target || Handle == 0) return;
+        var scale = target.Screen.Scale;
+        var x = (int)Math.Round(target.Left * scale); var y = (int)Math.Round(target.Top * scale);
+        var width = (int)Math.Round(target.Width * scale); var height = (int)Math.Round(target.Height * scale);
+        if (Native.GetWindowRect(Handle, out var r) && r.Left == x && r.Top == y && r.Right - r.Left == width && r.Bottom - r.Top == height) return;
+        Native.SetWindowPos(Handle, 0, x, y, width, height, 0x14);
+    }
+    private nint DisplayMessage(nint hwnd, int message, nint w, nint l, ref bool handled)
+    {
+        if (message == 0x2E0) _ = Dispatcher.BeginInvoke(() =>
+        {
+            if (Removed) return;
+            if (placement is null) ApplyDisplayLimits(Display.FromHandle(Handle));
+            else ApplyPlacement();
+        }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+        return 0;
     }
     private void GeometryChanged()
     {

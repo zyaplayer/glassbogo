@@ -54,9 +54,10 @@ internal sealed class Search2Window : LiquidWindow
     {
         session++;
         previous = Native.GetForegroundWindow();
-        var screen = Display.PrimaryScreen; var work = screen.WorkingArea; var scale = screen.Scale;
+        var screen = Display.PointerScreen; var work = screen.WorkingArea; var scale = screen.Scale;
+        ApplyDisplayLimits(screen);
         Width = Math.Min(640, work.Width / scale - 24); Height = Math.Min(420, work.Height / scale * .7);
-        Left = (work.Left + (work.Width - Width * scale) / 2) / scale; Top = (work.Top + work.Height * .18) / scale;
+        PlaceOn(screen, (work.Left + (work.Width - Width * scale) / 2) / scale, (work.Top + work.Height * .18) / scale);
         Query.Clear(); Results.ItemsSource = null; status.Text = "输入名称搜索应用或已管理入口"; Show(); Activate(); Query.Focus();
     }
     internal void Dismiss(bool restore)
